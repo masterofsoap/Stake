@@ -1,0 +1,23 @@
+name = "stake-api"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stake"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+
+# settle finished pots automatically (they are also settled lazily whenever anyone opens the app)
+[triggers]
+crons = ["*/30 * * * *"]
+
+[vars]
+RAKE_BPS = "1000"          # platform keeps 10% of forfeited stakes
+DEMO_MODE = "true"         # "true" = play-money top-ups, no payment processor. Set "false" before taking real money.
+BLOCKED_STATES = ""        # comma list of 2-letter states where signup is refused, e.g. "AZ,AR"
+APP_URL = ""               # optional: where Stripe sends people after paying (your site or a deep link)
+
+# Secrets (set with `npx wrangler secret put NAME`):
+#   STRIPE_SECRET_KEY      - for real wallet top-ups (Stripe Checkout)
+#   STRIPE_WEBHOOK_SECRET  - signing secret of the webhook pointing at /api/stripe/webhook
+#   ADMIN_SECRET           - for approving withdrawals

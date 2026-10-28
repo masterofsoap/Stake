@@ -21,10 +21,11 @@ function fresh(extra = {}) {
   };
   return { sqlite, env, call };
 }
+let uniq = 0;
 async function mkUsers(call, n, cash = 10000) {
   const us = [];
   for (let i = 0; i < n; i++) {
-    const s = await call('POST', '/api/signup', { body: { name: 'P' + i, state: 'CO', adult: true } });
+    const s = await call('POST', '/api/signup', { body: { name: 'P' + (uniq++), state: 'CO', password: 'pw1234', adult: true } });
     await call('POST', '/api/wallet/checkout', { token: s.data.token, body: { amountCents: cash } });
     us.push({ ...s.data, i });
   }
@@ -187,19 +188,25 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
   ok('old results fall off the board', (await call('GET', '/api/leaderboard', { token: us[0].token })).data.top.length === 0);
 }
 
-/* ---- recovery ---- */
+/* ---- login ---- */
 {
-  const { call } = fresh();
-  const s = await call('POST', '/api/signup', { body: { name: 'Zed', state: 'CO', adult: true } });
-  ok('signup returns a recovery code', /^[A-Z2-9]{4}(-[A-Z2-9]{4}){3}$/.test(s.data.recoveryCode), s.data.recoveryCode);
-  await call('POST', '/api/wallet/checkout', { token: s.data.token, body: { amountCents: 2000 } });
-  const r = await call('POST', '/api/recover', { body: { code: s.data.recoveryCode.toLowerCase().replace(/-/g, ' ') } });
-  ok('recovery works (case and separators ignored)', r.status === 200 && r.data.userId === s.data.userId && r.data.token !== s.data.token, r);
-  ok('old token is dead', (await call('GET', '/api/me', { token: s.data.token })).status === 401);
-  const me = await call('GET', '/api/me', { token: r.data.token });
-  ok('new token sees the money', me.status === 200 && me.data.balanceCents === 2000);
-  ok('wrong code rejected', (await call('POST', '/api/recover', { body: { code: 'AAAA-BBBB-CCCC-DDDD' } })).status === 404);
-  ok('junk rejected', (await call('POST', '/api/recover', { body: { code: 'x' } })).status === 404 && (await call('POST', '/api/recover', { body: {} })).status === 404);
+  const { sqlite, call } = fresh({ DEMO_BONUS_CENTS: '5000' });
+  const s1 = await call('POST', '/api/signup', { body: { name: 'Zed', password: 'hunter22', adult: true } });
+  ok('signup works with just name + password + 18+', s1.status === 200 && s1.data.token && s1.data.userId, s1);
+  ok('new play-money accounts start with the bonus', (await call('GET', '/api/wallet', { token: s1.data.token })).data.balanceCents === 5000);
+  const dup = await call('POST', '/api/signup', { body: { name: 'zED', password: 'other1', adult: true } });
+  ok('names are unique, ignoring case', dup.status === 409 && dup.data.error === 'name_taken', dup);
+  ok('short password refused', (await call('POST', '/api/signup', { body: { name: 'Pip', password: 'abc', adult: true } })).data.error === 'bad_password');
+  ok('password is not stored in the clear', !JSON.stringify(sqlite.query('SELECT * FROM users').all()).includes('hunter22'));
+  const l = await call('POST', '/api/login', { body: { name: 'ZED', password: 'hunter22' } });
+  ok('login works (name ignores case)', l.status === 200 && l.data.userId === s1.data.userId && l.data.token !== s1.data.token, l);
+  ok('login does not sign out the other device', (await call('GET', '/api/me', { token: s1.data.token })).status === 200 && (await call('GET', '/api/me', { token: l.data.token })).status === 200);
+  ok('same account, same money on the new device', (await call('GET', '/api/me', { token: l.data.token })).data.balanceCents === 5000);
+  ok('wrong password refused', (await call('POST', '/api/login', { body: { name: 'Zed', password: 'nope' } })).status === 401);
+  ok('unknown name refused the same way', (await call('POST', '/api/login', { body: { name: 'Nobody', password: 'nope' } })).data.error === 'bad_login');
+  ok('empty login refused', (await call('POST', '/api/login', { body: {} })).status === 401);
+  const nb = fresh(); const s2 = await nb.call('POST', '/api/signup', { body: { name: 'Kay', password: 'abcd', adult: true } });
+  ok('no bonus unless configured', (await nb.call('GET', '/api/wallet', { token: s2.data.token })).data.balanceCents === 0);
 }
 
 /* ---- hardening ---- */
@@ -207,12 +214,14 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
   const { call } = fresh({ RATE_LIMIT: 'on' });
   const ip = { 'cf-connecting-ip': '1.2.3.4' };
   let last;
-  for (let i = 0; i < 11; i++) last = await call('POST', '/api/signup', { body: { name: 'Spam' + i, state: 'CO', adult: true }, headers: ip });
+  for (let i = 0; i < 11; i++) last = await call('POST', '/api/signup', { body: { name: 'Spam' + i, state: 'CO', password: 'pw1234', adult: true }, headers: ip });
   ok('11th signup from one IP in an hour is limited', last.status === 429, last);
-  const other = await call('POST', '/api/signup', { body: { name: 'Fine', state: 'CO', adult: true }, headers: { 'cf-connecting-ip': '5.6.7.8' } });
+  const other = await call('POST', '/api/signup', { body: { name: 'Fine', state: 'CO', password: 'pw1234', adult: true }, headers: { 'cf-connecting-ip': '5.6.7.8' } });
   ok('other IPs unaffected', other.status === 200);
-  let rl; for (let i = 0; i < 12; i++) rl = await call('POST', '/api/recover', { body: { code: 'AAAA-BBBB-CCCC-DDDD' }, headers: ip });
-  ok('recovery guessing is rate limited', rl.status === 429, rl.status);
+  await call('POST', '/api/signup', { body: { name: 'Victim', password: 'strongpass', adult: true }, headers: { 'cf-connecting-ip': '7.7.7.7' } });
+  let rl; for (let i = 0; i < 12; i++) rl = await call('POST', '/api/login', { body: { name: 'Victim', password: 'guess' + i }, headers: { 'cf-connecting-ip': '8.8.8.' + i } });
+  ok('password guessing on one account is rate limited, even across IPs', rl.status === 429, rl.status);
+  ok('even the right password is blocked while locked out', (await call('POST', '/api/login', { body: { name: 'Victim', password: 'strongpass' }, headers: { 'cf-connecting-ip': '8.8.9.9' } })).status === 429);
   const t = other.data.token; let pay;
   for (let i = 0; i < 12; i++) pay = await call('POST', '/api/wallet/checkout', { token: t, body: { amountCents: 500 }, headers: { 'cf-connecting-ip': '5.6.7.8' } });
   ok('top-up spam limited per user', pay.status === 429, pay.status);
@@ -220,7 +229,7 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
   ok('oversized body refused', big.status === 413);
   const h = await worker.fetch(new Request('https://api.test/j/ABCDEF'), { DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } });
   ok('HTML pages carry CSP + frame deny', /default-src 'none'/.test(h.headers.get('content-security-policy')) && h.headers.get('x-frame-options') === 'DENY');
-  const sn = await call('POST', '/api/signup', { body: { name: '<img onerror=x>  A\u0000B', state: 'CO', adult: true }, headers: { 'cf-connecting-ip': '9.9.9.9' } });
+  const sn = await call('POST', '/api/signup', { body: { name: '<img onerror=x>  A\u0000B', state: 'CO', password: 'pw1234', adult: true }, headers: { 'cf-connecting-ip': '9.9.9.9' } });
   ok('names are stripped of markup and control chars', sn.data.name === 'img onerror=x AB', sn.data.name);
 }
 

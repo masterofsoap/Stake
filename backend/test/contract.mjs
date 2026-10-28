@@ -15,7 +15,7 @@ let fails = 0, passes = 0;
 const { errMsg } = await import('../../src/util.js');
 const has = (label, obj, spec) => { for (const [k, t] of Object.entries(spec)) { const v = obj == null ? undefined : obj[k]; const good = t === 'array' ? Array.isArray(v) : t === 'any' ? v !== undefined : typeof v === t; if (good) passes++; else { fails++; console.log(`FAIL ${label}.${k}: expected ${t}, got ${JSON.stringify(v)}`); } } };
 
-const A = await api.signup('Ann', 'CO'), B = await api.signup('Ben', 'CO');
+const A = await api.signup('Ann', 'pw1234'), B = await api.signup('Ben', 'pw1234');
 has('signup', A, { token: 'string', userId: 'string', name: 'string' });
 await api.checkout(A.token, 5000); await api.checkout(B.token, 5000);
 const created = await api.createPot(A.token, { name: 'Quit Crew', goalType: 'quit', goalText: 'Stayed clean today', durationDays: 7, stakeCents: 1000, maxMembers: 4, strict: false });
@@ -52,8 +52,7 @@ const w2 = await api.wallet(A.token); has('wallet.withdrawals[0]', w2.withdrawal
 
 // ---- public play, leaderboard, recovery: every field the new screens read
 {
-  const C1 = await api.signup('Cy', 'CO'), C2 = await api.signup('Di', 'TX');
-  has('signup.recoveryCode', C1, { recoveryCode: 'string' });
+  const C1 = await api.signup('Cy', 'pw1234'), C2 = await api.signup('Di', 'pw1234');
   await api.checkout(C1.token, 5000); await api.checkout(C2.token, 5000);
   const pp = await api.playPublic(C1.token, { goalType: 'sleep', durationDays: 7, stakeCents: 1000 });
   has('playPublic', pp, { id: 'string', created: 'boolean' });
@@ -65,17 +64,17 @@ const w2 = await api.wallet(A.token); has('wallet.withdrawals[0]', w2.withdrawal
   has('publicPots.pots[]', row, { id: 'string', name: 'string', goalType: 'string', goalText: 'string', potCents: 'number', stakeCents: 'number', durationDays: 'number', memberCount: 'number', maxMembers: 'number', startsAt: 'string', joined: 'boolean' });
   const det = await api.pot(C1.token, pp.id);
   has('pot(public).pot', det.pot, { isPublic: 'boolean', startsAt: 'string', status: 'string', memberCount: 'number', maxMembers: 'number' });
-  const C3 = await api.signup('Ed', 'CO'); await api.checkout(C3.token, 2000);
+  const C3 = await api.signup('Ed', 'pw1234'); await api.checkout(C3.token, 2000);
   const jp = await api.joinPublic(C3.token, pp.id); has('joinPublic', jp, { id: 'string' });
   const lb = await api.leaderboard(C1.token);
   has('leaderboard', lb, { top: 'array', windowDays: 'number' });
   const me2 = await api.me(C1.token);
   has('me.stats', me2.stats, { played: 'number', wins: 'number', netCents: 'number' });
-  const rec = await api.recover(C1.recoveryCode);
-  has('recover', rec, { token: 'string', userId: 'string', name: 'string' });
-  try { await api.me(C1.token); fails++; console.log('FAIL old token still works'); } catch { passes++; }
-  try { await api.recover('AAAA-BBBB-CCCC-DDDD'); fails++; } catch (e) { if (e.message === 'bad_code') passes++; else { fails++; console.log('FAIL recover error', e.message); } }
-  for (const code of ['rate_limited', 'public_auto', 'server_error']) { if (errMsg({ message: code }) === 'Something went wrong. Try again.') { fails++; console.log('FAIL no message for', code); } else passes++; }
+  const lg = await api.login('cy', 'pw1234');
+  has('login', lg, { token: 'string', userId: 'string', name: 'string' });
+  try { await api.login('Cy', 'wrong'); fails++; console.log('FAIL bad login accepted'); } catch (e) { if (e.message === 'bad_login') passes++; else { fails++; console.log('FAIL login error', e.message); } }
+  try { await api.signup('cy', 'pw1234'); fails++; console.log('FAIL duplicate name accepted'); } catch (e) { if (e.message === 'name_taken') passes++; else { fails++; console.log('FAIL dup error', e.message); } }
+  for (const code of ['rate_limited', 'public_auto', 'server_error', 'bad_login', 'name_taken', 'bad_password', 'bad_name']) { if (errMsg({ message: code }) === 'Something went wrong. Try again.') { fails++; console.log('FAIL no message for', code); } else passes++; }
 }
 
 // error codes the UI maps must actually be what the server sends

@@ -7,3 +7,6 @@ dist/
 .DS_Store
 .env
 .env.*
+mobile/
+backend.log
+node_modules/

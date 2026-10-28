@@ -68,12 +68,22 @@ async function limited(env, key, max, windowSec) {
 }
 const clientIp = (req) => req.headers.get('cf-connecting-ip') || 'local';
 const cleanName = (v) => clip(v, 20).replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim();
-const RECOVERY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const newRecoveryCode = () => {
-  const c = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join('');
-  return c.match(/.{4}/g).join('-');
+async function hashPassword(password, saltHex) {
+  const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const salt = Uint8Array.from(saltHex.match(/.{2}/g).map((h) => parseInt(h, 16)));
+  return toHex(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 }, key, 256));
+}
+const sameStr = (a, b) => {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
 };
-const normRecovery = (v) => clip(v, 40).toUpperCase().replace(/[^A-Z0-9]/g, '');
+async function newSession(env, userId) {
+  const token = 'sk_' + randHex(24);
+  await env.DB.prepare('INSERT INTO sessions (token_hash, user_id, created_at) VALUES (?, ?, ?)').bind(await sha256(token), userId, nowIso()).run();
+  return token;
+}
 
 async function readJson(req) {
   try {
@@ -85,7 +95,7 @@ async function readJson(req) {
 async function userAuth(req, env) {
   const t = bearer(req);
   if (!t) return null;
-  return env.DB.prepare('SELECT * FROM users WHERE token_hash = ?').bind(await sha256(t)).first();
+  return env.DB.prepare('SELECT u.* FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token_hash = ?').bind(await sha256(t)).first();
 }
 async function balanceOf(env, userId) {
   const r = await env.DB.prepare('SELECT COALESCE(SUM(amount_cents), 0) AS b FROM ledger WHERE user_id = ?').bind(userId).first();
@@ -113,30 +123,40 @@ async function signup(req, env) {
   const b = await readJson(req);
   if (!b) return json({ error: 'bad_request' }, 400);
   const name = cleanName(b.name);
-  const state = clip(b.state, 2).toUpperCase();
+  const password = String(b.password == null ? '' : b.password);
+  const state = /^[A-Za-z]{2}$/.test(String(b.state || '')) ? String(b.state).toUpperCase() : 'XX';
   if (b.adult !== true) return json({ error: 'must_be_18' }, 403);
-  if (name.length < 2 || !/^[A-Z]{2}$/.test(state)) return json({ error: 'bad_request' }, 400);
-  const blocked = String(env.BLOCKED_STATES || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+  if (name.length < 2) return json({ error: 'bad_name' }, 400);
+  if (password.length < 4 || password.length > 72) return json({ error: 'bad_password' }, 400);
+  const blocked = String(env.BLOCKED_STATES || '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean);
   if (blocked.includes(state)) return json({ error: 'not_available_in_state' }, 403);
+  const username = name.toLowerCase();
   const id = 'u_' + randHex(6);
-  const token = 'sk_' + randHex(24);
-  const recoveryCode = newRecoveryCode();
-  await env.DB.prepare('INSERT INTO users (id, token_hash, name, state, created_at, recovery_hash) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(id, await sha256(token), name, state, nowIso(), await sha256('rc:' + normRecovery(recoveryCode)))
-    .run();
-  return json({ userId: id, token, name, recoveryCode });
+  const salt = randHex(16);
+  try {
+    await env.DB.prepare('INSERT INTO users (id, username, pw_salt, pw_hash, name, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(id, username, salt, await hashPassword(password, salt), name, state, nowIso())
+      .run();
+  } catch (e) {
+    return json({ error: 'name_taken' }, 409);
+  }
+  // play-money mode: everyone starts with a little money so they can try a pot straight away
+  const bonus = parseInt(env.DEMO_BONUS_CENTS, 10) || 0;
+  if (env.DEMO_MODE === 'true' && bonus > 0) await ledgerInsert(env, id, 'deposit', bonus, null, 'bonus:' + id, nowIso()).run();
+  return json({ userId: id, token: await newSession(env, id), name });
 }
 
-// Lost phone? The recovery code issued at signup mints a fresh token (and kills the old one).
-async function recover(req, env) {
+async function login(req, env) {
   const b = await readJson(req);
-  const code = normRecovery(b && b.code);
-  if (code.length !== 16) return json({ error: 'bad_code' }, 404);
-  const u = await env.DB.prepare('SELECT * FROM users WHERE recovery_hash = ?').bind(await sha256('rc:' + code)).first();
-  if (!u) return json({ error: 'bad_code' }, 404);
-  const token = 'sk_' + randHex(24);
-  await env.DB.prepare('UPDATE users SET token_hash = ? WHERE id = ?').bind(await sha256(token), u.id).run();
-  return json({ userId: u.id, token, name: u.name });
+  const username = cleanName(b && b.name).toLowerCase();
+  const password = String((b && b.password) == null ? '' : b.password);
+  if (!username || !password) return json({ error: 'bad_login' }, 401);
+  if (await limited(env, 'login:' + username, 10, 900)) return json({ error: 'rate_limited' }, 429, { 'retry-after': '300' });
+  const u = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
+  // always do the hash so timing doesn't reveal whether the name exists
+  const got = await hashPassword(password, u ? u.pw_salt : '00'.repeat(16));
+  if (!u || !sameStr(got, u.pw_hash)) return json({ error: 'bad_login' }, 401);
+  return json({ userId: u.id, token: await newSession(env, u.id), name: u.name });
 }
 
 async function potSummaryRows(env, userId) {
@@ -804,9 +824,9 @@ async function route(req, env) {
     if (await limited(env, 'signup:' + clientIp(req), 10, 3600)) return json({ error: 'rate_limited' }, 429, { 'retry-after': '600' });
     return signup(req, env);
   }
-  if (path === '/api/recover' && m === 'POST') {
-    if (await limited(env, 'recover:' + clientIp(req), 10, 3600)) return json({ error: 'rate_limited' }, 429, { 'retry-after': '600' });
-    return recover(req, env);
+  if (path === '/api/login' && m === 'POST') {
+    if (await limited(env, 'loginip:' + clientIp(req), 40, 3600)) return json({ error: 'rate_limited' }, 429, { 'retry-after': '600' });
+    return login(req, env);
   }
   if (path === '/api/public' && m === 'GET') return publicList(req, env);
   if (path === '/api/public/play' && m === 'POST') return playPublic(req, env);

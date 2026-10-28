@@ -25,7 +25,8 @@ async function call(path, { method = 'GET', token, body } = {}) {
   return data;
 }
 
-export const signup = (name, state) => call('/api/signup', { method: 'POST', body: { name, state, adult: true } });
+export const signup = (name, password) => call('/api/signup', { method: 'POST', body: { name, password, adult: true } });
+export const login = (name, password) => call('/api/login', { method: 'POST', body: { name, password } });
 export const me = (t) => call('/api/me', { token: t });
 export const wallet = (t) => call('/api/wallet', { token: t });
 export const checkout = (t, amountCents) => call('/api/wallet/checkout', { method: 'POST', token: t, body: { amountCents } });
@@ -39,7 +40,6 @@ export const cancelPot = (t, id) => call(`/api/pots/${id}/cancel`, { method: 'PO
 export const leavePot = (t, id) => call(`/api/pots/${id}/leave`, { method: 'POST', token: t });
 export const checkin = (t, id, note) => call(`/api/pots/${id}/checkin`, { method: 'POST', token: t, body: { note } });
 export const dispute = (t, id, userId, date) => call(`/api/pots/${id}/dispute`, { method: 'POST', token: t, body: { userId, date } });
-export const recover = (code) => call('/api/recover', { method: 'POST', body: { code } });
 export const publicPots = (t, goalType) => call('/api/public' + (goalType ? '?goalType=' + encodeURIComponent(goalType) : ''), { token: t });
 export const playPublic = (t, body) => call('/api/public/play', { method: 'POST', token: t, body });
 export const joinPublic = (t, id) => call(`/api/pots/${id}/join`, { method: 'POST', token: t });

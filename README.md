@@ -37,32 +37,35 @@ pot with players from everywhere (or you open a lobby others fill). Public pots 
 Every cent is a ledger row. Settlement is one atomic batch with unique refs, so it cannot pay twice, and
 `sum(payouts) + rake = sum(stakes)` is fuzz-tested over thousands of random pots.
 
-## Run it locally
+## Run it (3 commands)
+
+You need [Node](https://nodejs.org) and the Expo Go app on your phone (same Wi-Fi as your computer).
 
 ```
-cd backend
-npm install
-npx wrangler d1 create stake                 # paste database_id into wrangler.toml
-npm run db:local
-npm run dev                                  # :8787, play-money mode
+git clone https://github.com/masterofsoap/Stake.git
+cd Stake
+bash run.sh
 ```
-Then `bash setup.sh` (creates a fresh Expo app with matching SDK and copies Stake in), set `API_URL` in
-`../stake-app/src/config.js` to `http://<your LAN IP>:8787`, and `cd ../stake-app && npx expo start`.
-Open it on a couple of phones to try a pot. `DEMO_MODE = "true"` gives free play-money top-ups.
+That sets up the database, starts the backend, seeds a few play-money players into public pots, builds the
+app, and shows a QR code. Scan it with Expo Go, make an account (any name + password) and you start with $50
+of play money. Tap **Play anyone** to join a pot.
+
+Re-run `bash run.sh` any time. If it can't find your Wi-Fi address: `IP=192.168.1.23 bash run.sh`.
 
 ## Deploy to production
 
 ```
 cd backend
+npx wrangler d1 create stake                 # paste the database_id into backend/wrangler.toml
 npm run db:remote
 npx wrangler secret put ADMIN_SECRET
 npm run deploy                               # prints https://stake-api.<you>.workers.dev
 ```
-Put that URL in `src/config.js`, then build the app for the stores:
+Then build the app for the stores:
 
 ```
-BUNDLE_ID=com.yourname.stake bash setup.sh
-cd ../stake-app
+API_URL=https://stake-api.<you>.workers.dev BUNDLE_ID=com.yourname.stake bash setup.sh
+cd mobile
 npx eas-cli build --platform all --profile production
 npx eas-cli submit --platform all
 ```
@@ -86,10 +89,10 @@ npx eas-cli submit --platform all
 
 ### What's built in for production
 
-- Fixed-window rate limits in D1: 120 writes/min/IP, 10 signups/hour/IP, 10 recovery attempts/hour/IP,
+- Fixed-window rate limits in D1: 120 writes/min/IP, 10 signups/hour/IP, 10 login attempts per 15 min per account,
   10 payment calls/min/user, 30 joins/min/user; 20 KB body cap
 - Strict security headers (no-sniff, no-store, CSP + frame-deny on the web pages), display names stripped of markup
-- Account recovery: a code shown at signup restores the account on a new phone and kills the old token
+- Accounts: name + password (PBKDF2-hashed), one session per device, login attempts rate limited per account and per IP
 - Race-safe money: atomic conditional charges (no overdraw), seat-taking only while a pot is open, idempotent
   settlement, refunds, and Stripe credits
 - CI runs every test on each push (`.github/workflows/test.yml`)
@@ -97,10 +100,10 @@ npx eas-cli submit --platform all
 ## Tests
 
 ```
-cd backend && bun test/run.mjs && bun test/public.mjs && bun test/contract.mjs
+cd backend && bun test/run.mjs && bun test/public.mjs && bun test/contract.mjs && bun test/seed.mjs
 ```
 `run.mjs` money rules, fuzz and API/Stripe flows · `public.mjs` matchmaking, auto-start, rollovers, refunds,
-join races, results, leaderboard, recovery, rate limits · `contract.mjs` drives the app's real API client
+join races, results, leaderboard, login, rate limits · `contract.mjs` drives the app's real API client
 against the Worker and checks every field the screens read.
 
 ## Business math
@@ -114,5 +117,5 @@ repeat pots, and public-pot liquidity (the more players, the faster pots fill an
 - Check-ins are self-reported; the defense is majority dispute. Photo proof (R2) and Apple Health / Google Fit
   auto-verification are the next trust upgrades, and matter most for public pots with strangers.
 - Player reporting/blocking and a name filter (display names are the only user-written text strangers see)
-- Push notifications ("3 days left", "someone disputed you"), email/phone sign-in
+- Push notifications ("3 days left", "someone disputed you"), password reset by email
 - Payouts through Stripe Connect instead of manual withdrawals

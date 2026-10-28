@@ -1,9 +1,17 @@
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
-  token_hash TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  state TEXT NOT NULL,
-  recovery_hash TEXT UNIQUE,
+  username TEXT NOT NULL UNIQUE,   -- lowercase login name
+  pw_salt TEXT NOT NULL,
+  pw_hash TEXT NOT NULL,
+  name TEXT NOT NULL,              -- display name
+  state TEXT NOT NULL DEFAULT 'XX',
+  created_at TEXT NOT NULL
+);
+
+-- One row per signed-in device, so logging in on a second phone doesn't sign out the first.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 

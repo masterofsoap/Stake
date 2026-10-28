@@ -11,5 +11,6 @@ jobs:
           cd backend
           bun test/run.mjs
           bun test/public.mjs
+          bun test/seed.mjs
       - name: app <-> API contract
         run: cd backend && bun test/contract.mjs

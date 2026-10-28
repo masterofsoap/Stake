@@ -96,9 +96,9 @@ const mkCall = (env) => async (method, path, { token, body, headers, raw } = {})
 { // ---- accounts + wallet
   const { sqlite, env } = freshEnv(); const call = mkCall(env);
   let r = await call('POST', '/api/signup', { body: { name: 'Kid', state: 'CO', adult: false } }); ok('signup needs 18+', r.status === 403, r);
-  r = await call('POST', '/api/signup', { body: { name: 'Al', state: 'AZ', adult: true } }); ok('blocked state refused', r.status === 403 && r.data.error === 'not_available_in_state', r);
-  r = await call('POST', '/api/signup', { body: { name: 'A', state: 'CO', adult: true } }); ok('short name refused', r.status === 400, r);
-  r = await call('POST', '/api/signup', { body: { name: 'Alex', state: 'CO', adult: true } }); ok('signup ok', r.status === 200 && r.data.token.startsWith('sk_'), r);
+  r = await call('POST', '/api/signup', { body: { name: 'Al', state: 'AZ', password: 'pw1234', adult: true } }); ok('blocked state refused', r.status === 403 && r.data.error === 'not_available_in_state', r);
+  r = await call('POST', '/api/signup', { body: { name: 'A', state: 'CO', password: 'pw1234', adult: true } }); ok('short name refused', r.status === 400, r);
+  r = await call('POST', '/api/signup', { body: { name: 'Alex', state: 'CO', password: 'pw1234', adult: true } }); ok('signup ok', r.status === 200 && r.data.token.startsWith('sk_'), r);
   const A = r.data;
   r = await call('GET', '/api/me'); ok('me needs auth', r.status === 401);
   r = await call('POST', '/api/wallet/checkout', { token: A.token, body: { amountCents: 100 } }); ok('top-up min enforced', r.status === 400, r);
@@ -116,7 +116,7 @@ const mkCall = (env) => async (method, path, { token, body, headers, raw } = {})
 
 { // ---- Stripe path (DEMO_MODE off)
   const { sqlite, env } = freshEnv({ DEMO_MODE: 'false', STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_test' }); const call = mkCall(env);
-  const A = (await call('POST', '/api/signup', { body: { name: 'Alex', state: 'CO', adult: true } })).data;
+  const A = (await call('POST', '/api/signup', { body: { name: 'Alex', state: 'CO', password: 'pw1234', adult: true } })).data;
   let seen = null; const realFetch = globalThis.fetch;
   globalThis.fetch = async (url, o) => { seen = { url, o }; return new Response(JSON.stringify({ id: 'cs_1', url: 'https://checkout.stripe.test/c/1' }), { status: 200 }); };
   let r = await call('POST', '/api/wallet/checkout', { token: A.token, body: { amountCents: 2500 } });
@@ -145,14 +145,14 @@ const mkCall = (env) => async (method, path, { token, body, headers, raw } = {})
   ok('verifyStripeSignature rejects empty header/secret', !(await verifyStripeSignature('x', '', 's')) && !(await verifyStripeSignature('x', 't=1,v1=a', '')));
   // with no Stripe key and demo off
   const e2 = freshEnv({ DEMO_MODE: 'false' }); const c2 = mkCall(e2.env);
-  const B = (await c2('POST', '/api/signup', { body: { name: 'Bo', state: 'CO', adult: true } })).data;
+  const B = (await c2('POST', '/api/signup', { body: { name: 'Bo', state: 'CO', password: 'pw1234', adult: true } })).data;
   r = await c2('POST', '/api/wallet/checkout', { token: B.token, body: { amountCents: 2500 } }); ok('no processor configured -> 503, never free money', r.status === 503, r);
 }
 
 { // ---- pots end to end
   const { sqlite, env } = freshEnv(); const call = mkCall(env);
   const users = {};
-  for (const n of ['Ann', 'Ben', 'Cy', 'Dee']) { users[n] = (await call('POST', '/api/signup', { body: { name: n, state: 'CO', adult: true } })).data; await call('POST', '/api/wallet/checkout', { token: users[n].token, body: { amountCents: 5000 } }); }
+  for (const n of ['Ann', 'Ben', 'Cy', 'Dee']) { users[n] = (await call('POST', '/api/signup', { body: { name: n, state: 'CO', password: 'pw1234', adult: true } })).data; await call('POST', '/api/wallet/checkout', { token: users[n].token, body: { amountCents: 5000 } }); }
   const bal = async (n) => (await call('GET', '/api/wallet', { token: users[n].token })).data.balanceCents;
   let r = await call('POST', '/api/pots', { token: users.Ann.token, body: { name: 'No Vape Gang', goalType: 'quit', goalText: 'Zero vapes today', durationDays: 7, stakeCents: 2000, maxMembers: 3 } });
   ok('create pot', r.status === 200 && r.data.joinCode.length === 6, r);
@@ -248,7 +248,7 @@ const mkCall = (env) => async (method, path, { token, body, headers, raw } = {})
 
 { // ---- overdraw race: one balance, two pots, simultaneous joins
   const { sqlite, env } = freshEnv(); const call = mkCall(env);
-  const mkU = async (n) => (await call('POST', '/api/signup', { body: { name: n, state: 'CO', adult: true } })).data;
+  const mkU = async (n) => (await call('POST', '/api/signup', { body: { name: n, state: 'CO', password: 'pw1234', adult: true } })).data;
   const host = await mkU('Host'), pal = await mkU('Pal');
   await call('POST', '/api/wallet/checkout', { token: host.token, body: { amountCents: 10000 } });
   await call('POST', '/api/wallet/checkout', { token: pal.token, body: { amountCents: 1000 } });

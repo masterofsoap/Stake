@@ -114,110 +114,48 @@ function Dots({ days, onPressDay }) {
 /* ---------- welcome ---------- */
 
 function Welcome({ onDone }) {
-  const [mode, setMode] = useState('new'); // new | recover | saved
+  const [mode, setMode] = useState('new'); // new | login
   const [name, setName] = useState('');
-  const [state, setState] = useState('');
+  const [password, setPassword] = useState('');
   const [adult, setAdult] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [fresh, setFresh] = useState(null);
-  const [code, setCode] = useState('');
 
   const go = async () => {
     setBusy(true);
     try {
-      const r = await api.signup(name.trim(), state.trim().toUpperCase());
-      setFresh({ token: r.token, userId: r.userId, name: r.name, recoveryCode: r.recoveryCode });
-      setMode('saved');
+      const r = mode === 'new' ? await api.signup(name.trim(), password) : await api.login(name.trim(), password);
+      await onDone({ token: r.token, userId: r.userId, name: r.name });
     } catch (e) {
-      Alert.alert("Couldn't sign you up", errMsg(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const restore = async () => {
-    setBusy(true);
-    try {
-      const r = await api.recover(code.trim());
-      await onDone({ token: r.token, userId: r.userId, name: r.name, recoveryCode: code.trim().toUpperCase() });
-    } catch (e) {
-      Alert.alert("Couldn't restore", e && e.message === 'bad_code' ? "That recovery code doesn't match an account." : errMsg(e));
+      Alert.alert(mode === 'new' ? "Couldn't sign you up" : "Couldn't log you in", errMsg(e));
     } finally {
       setBusy(false);
     }
   };
 
-  if (mode === 'saved' && fresh) {
-    return (
-      <Screen title="">
-        <Text style={s.logoWord}>stake</Text>
-        <Text style={s.hero}>Save your recovery code</Text>
-        <Text style={s.sub}>
-          Your account lives on this phone. If you lose it or switch phones, this code is the only way to get your account and your money back. Screenshot it or send it to yourself.
-        </Text>
-        <Card style={{ marginTop: 16 }}>
-          <Text style={[s.code, { fontSize: 22, letterSpacing: 2 }]} selectable>
-            {fresh.recoveryCode}
-          </Text>
-          <Btn title="Save it somewhere" kind="ghost" onPress={() => Share.share({ message: `My Stake recovery code: ${fresh.recoveryCode}` })} />
-        </Card>
-        <Btn title="I saved it" onPress={() => onDone(fresh)} />
-      </Screen>
-    );
-  }
-
-  if (mode === 'recover') {
-    return (
-      <Screen title="" onBack={() => setMode('new')}>
-        <Text style={s.hero}>Welcome back</Text>
-        <Text style={s.sub}>Enter the recovery code you saved when you signed up.</Text>
-        <Card style={{ marginTop: 16 }}>
-          <TextInput
-            style={[s.input, { textAlign: 'center', letterSpacing: 2, fontWeight: '800', color: C.lime }]}
-            value={code}
-            onChangeText={setCode}
-            placeholder="XXXX-XXXX-XXXX-XXXX"
-            placeholderTextColor={C.sub}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            maxLength={24}
-          />
-        </Card>
-        <Btn title={busy ? 'Checking...' : 'Restore my account'} onPress={restore} disabled={busy || code.replace(/[^A-Za-z0-9]/g, '').length < 16} />
-      </Screen>
-    );
-  }
-
-  const ready = name.trim().length >= 2 && /^[A-Za-z]{2}$/.test(state.trim()) && adult;
+  const ready = name.trim().length >= 2 && password.length >= 4 && (mode === 'login' || adult);
   return (
     <Screen title="">
       <Text style={s.logoWord}>stake</Text>
       <Text style={s.hero}>Bet on yourself.{'\n'}Win against everyone.</Text>
-      <Text style={s.sub}>
-        Put money on a health goal, with friends or strangers anywhere. Hit it and you get your stake back plus a cut of everyone who quit on theirs.
-      </Text>
+      <Text style={s.sub}>Put money on a health goal, with friends or strangers anywhere. Hit it and you get your stake back plus a cut of everyone who quit on theirs.</Text>
 
-      <Card style={{ marginTop: 20 }}>
-        <Label>Your name</Label>
-        <TextInput style={s.input} value={name} onChangeText={setName} placeholder="What others will see" placeholderTextColor={C.sub} maxLength={20} />
-        <Label>Your state (2 letters)</Label>
-        <TextInput
-          style={s.input}
-          value={state}
-          onChangeText={setState}
-          placeholder="CO"
-          placeholderTextColor={C.sub}
-          autoCapitalize="characters"
-          maxLength={2}
-        />
-        <TouchableOpacity onPress={() => setAdult(!adult)} style={s.check}>
-          <Text style={s.checkBox}>{adult ? '☑' : '☐'}</Text>
-          <Text style={s.checkText}>I'm 18 or older</Text>
-        </TouchableOpacity>
+      <View style={[s.row, { marginTop: 18 }]}>
+        <Chip label="Create account" active={mode === 'new'} onPress={() => setMode('new')} />
+        <Chip label="Log in" active={mode === 'login'} onPress={() => setMode('login')} />
+      </View>
+      <Card>
+        <Label>Name</Label>
+        <TextInput style={s.input} value={name} onChangeText={setName} placeholder="What others will see" placeholderTextColor={C.sub} maxLength={20} autoCapitalize="none" autoCorrect={false} />
+        <Label>Password</Label>
+        <TextInput style={s.input} value={password} onChangeText={setPassword} placeholder="At least 4 characters" placeholderTextColor={C.sub} secureTextEntry autoCapitalize="none" autoCorrect={false} />
+        {mode === 'new' ? (
+          <TouchableOpacity onPress={() => setAdult(!adult)} style={s.check}>
+            <Text style={s.checkBox}>{adult ? '☑' : '☐'}</Text>
+            <Text style={s.checkText}>I'm 18 or older</Text>
+          </TouchableOpacity>
+        ) : null}
       </Card>
-      <Btn title={busy ? 'One sec...' : "Let's go"} onPress={go} disabled={!ready || busy} />
-      <TouchableOpacity onPress={() => setMode('recover')} style={{ alignItems: 'center', marginTop: 18 }}>
-        <Text style={{ color: C.sub, fontSize: 14 }}>I already have an account</Text>
-      </TouchableOpacity>
+      <Btn title={busy ? 'One sec...' : mode === 'new' ? "Let's go" : 'Log in'} onPress={go} disabled={!ready || busy} />
     </Screen>
   );
 }
@@ -839,24 +777,6 @@ function PotScreen({ session, nav, potId }) {
 
 /* ---------- wallet ---------- */
 
-function BackupCode({ code }) {
-  const [show, setShow] = useState(false);
-  return (
-    <>
-      <Label>ACCOUNT BACKUP</Label>
-      <Card>
-        <Text style={s.sub}>Lose your phone and this code is the only way back into your account and your money.</Text>
-        {show ? (
-          <Text style={[s.code, { fontSize: 20, letterSpacing: 2 }]} selectable>
-            {code}
-          </Text>
-        ) : null}
-        <Btn title={show ? 'Hide' : 'Show my recovery code'} kind="ghost" onPress={() => setShow(!show)} />
-      </Card>
-    </>
-  );
-}
-
 function Wallet({ session, nav }) {
   const [w, setW] = useState(null);
   const [amt, setAmt] = useState(2500);
@@ -936,8 +856,6 @@ function Wallet({ session, nav }) {
       {w && w.withdrawals.filter((x) => x.status === 'pending').map((x) => (
         <Text key={x.id} style={s.tiny}>Pending withdrawal: {fmt(x.amount_cents)}</Text>
       ))}
-
-      {session.recoveryCode ? <BackupCode code={session.recoveryCode} /> : null}
 
       <Label>HISTORY</Label>
       {w && !w.entries.length ? <Text style={s.sub}>Nothing yet.</Text> : null}

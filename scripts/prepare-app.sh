@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 if [ ! -d mobile ]; then
   npx --yes create-expo-app@latest mobile --template blank
-  (cd mobile && npx expo install @react-native-async-storage/async-storage)
+  (cd mobile && npx expo install @react-native-async-storage/async-storage expo-linear-gradient expo-font @expo-google-fonts/poppins)
   node scripts/patch-app-json.js mobile/app.json
 fi
 cp App.js mobile/App.js

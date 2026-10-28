@@ -10,13 +10,17 @@ export const DURATIONS = [7, 14, 30];
 export const PUBLIC_STAKES = [500, 1000, 2500, 5000];
 
 export const GOALS = [
-  { type: 'quit', emoji: '🚭', label: 'Quit nicotine', text: 'Stayed nicotine-free today', name: 'Quit Crew' },
-  { type: 'sleep', emoji: '😴', label: 'Sleep', text: 'In bed on time, 7+ hours', name: 'Sleep Club' },
-  { type: 'move', emoji: '🏃', label: 'Move', text: '30 minutes of exercise', name: 'Move Squad' },
-  { type: 'sober', emoji: '🍺', label: 'Stay sober', text: 'No alcohol today', name: 'Dry Run' },
-  { type: 'eat', emoji: '🥗', label: 'Eat clean', text: 'Ate clean all day', name: 'Clean Plate' },
-  { type: 'custom', emoji: '🎯', label: 'Your own', text: '', name: '' },
+  { type: 'quit', label: 'Quit nicotine', text: 'Stayed nicotine-free today', name: 'Quit Crew' },
+  { type: 'sleep', label: 'Sleep', text: 'In bed on time, 7+ hours', name: 'Sleep Club' },
+  { type: 'move', label: 'Move', text: '30 minutes of exercise', name: 'Move Squad' },
+  { type: 'sober', label: 'Stay sober', text: 'No alcohol today', name: 'Dry Run' },
+  { type: 'eat', label: 'Eat clean', text: 'Ate clean all day', name: 'Clean Plate' },
+  { type: 'custom', label: 'Your own', text: '', name: '' },
 ];
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// '2026-10-27' or an ISO timestamp -> 'Oct 27'
+export const fmtDate = (d) => (d ? `${MONTHS[Number(d.slice(5, 7)) - 1]} ${Number(d.slice(8, 10))}` : '');
 
 const ERRORS = {
   network: "Can't reach the server. Check your connection.",
@@ -43,11 +47,23 @@ const ERRORS = {
   public_auto: 'Public pots start on their own.',
   too_large: 'That request was too big.',
   server_error: 'Our server hiccuped. Try again.',
+  cash_disabled: 'Real-money play is not switched on yet. Play money works.',
+  not_available_here: "Real-money play isn't available where you are right now. Play money works everywhere.",
+  account_locked: 'Real money is paused on your account while we review a card dispute. Contact support.',
+  self_excluded: "You've taken a break from real-money play. Play money still works.",
+  deposit_limit: "That's over the daily deposit limit. Try a smaller amount or come back tomorrow.",
+  payouts_not_set_up: 'Set up cash-outs first, so we know where to send your money.',
+  funds_on_hold: "New card deposits can be cashed out after a few days. Winnings aren't held.",
+  payment_provider_error: "Couldn't reach the payment provider. Try again in a minute.",
+  bad_email: "That doesn't look like an email address.",
+  email_taken: 'That email is already on an account. Log in instead, or reset your password.',
+  wrong_code: "That code isn't right, or it expired. Send a new one.",
+  too_many_attempts: 'Too many wrong tries. Send a new code.',
+  verify_email: 'Confirm your email to play for real money.',
+  email_not_configured: "Email isn't set up on the server yet.",
+  send_failed: "Couldn't email the code. Check the address and try again.",
 };
 export const errMsg = (e) => ERRORS[e && e.message] || 'Something went wrong. Try again.';
-
-export const dayStatusColor = (s, C) =>
-  ({ done: C.lime, missed: C.red, disputed: C.orange, open: 'transparent', future: C.line }[s] || C.line);
 
 export const TYPE_LABEL = {
   deposit: 'Added money',
@@ -56,4 +72,5 @@ export const TYPE_LABEL = {
   payout: 'Pot winnings',
   withdrawal: 'Withdrawal',
   withdrawal_reversal: 'Withdrawal reversed',
+  chargeback: 'Card dispute',
 };

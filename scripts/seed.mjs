@@ -18,7 +18,7 @@ export async function seed(base, log = console.log) {
     try {
       return await call('/api/login', { method: 'POST', body: { name, password: PASS } });
     } catch (e) {
-      return call('/api/signup', { method: 'POST', body: { name, password: PASS, adult: true } });
+      return call('/api/signup', { method: 'POST', body: { name, password: PASS, adult: true, email: name.toLowerCase() + '@bots.example.com' } });
     }
   };
   const first = await player('Mia');

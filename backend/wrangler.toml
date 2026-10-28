@@ -1,11 +1,19 @@
-name = "stake-api"
+name = "gostake-api"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
+# the API lives at https://api.gostake.app (gostake.app is on Cloudflare, so deploy creates the DNS record itself)
+routes = [{ pattern = "api.gostake.app", custom_domain = true }]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "stake"
 database_id = "00000000-0000-0000-0000-000000000000"   # local dev works as-is; for deploy run `wrangler d1 create stake` and paste the real id here
+
+# Confirmation and password-reset emails, sent by Cloudflare Email Service from EMAIL_FROM.
+# One-time setup: dashboard > Compute > Email Service > Email Sending > Onboard Domain > gostake.app.
+# Sending to any address needs the Workers Paid plan.
+[[send_email]]
+name = "EMAIL"
 
 # settle finished pots automatically (they are also settled lazily whenever anyone opens the app)
 [triggers]
@@ -13,13 +21,24 @@ crons = ["*/30 * * * *"]
 
 [vars]
 RAKE_BPS = "1000"          # platform keeps 10% of forfeited stakes
-DEMO_MODE = "true"         # "true" = play-money top-ups, no payment processor. Set "false" before taking real money.
-BLOCKED_STATES = ""        # comma list of 2-letter states where signup is refused, e.g. "AZ,AR"
-DEMO_BONUS_CENTS = "5000"  # play-money mode only: every new account starts with this much, so you can try pots right away
+PLAY_BONUS_CENTS = "5000"  # every new account starts with this much PLAY money (never cash)
 RATE_LIMIT = "on"          # per-IP and per-user request limits; leave on in production
+EMAIL_FROM = "hello@gostake.app"  # sender for code emails (shows as "Go Stake")
 APP_URL = ""               # optional: where Stripe sends people after paying (your site or a deep link)
 
+# ---- real money ----
+CASH = "off"               # "on" = the Cash wallet, cash pots, Stripe deposits and payouts. Play money always works.
+GEOFENCE = "on"            # cash needs a connection from CASH_COUNTRIES and not from BLOCKED_STATES (Cloudflare's geo, not user input)
+CASH_COUNTRIES = "US"
+BLOCKED_STATES = "AZ,AR,CT,DE,LA,MT,SC,SD,TN"   # starting point only: states that commonly restrict paid-entry contests. Get a lawyer's list.
+DEPOSIT_DAILY_CAP_CENTS = "50000"  # max cash deposits per user per rolling 24h
+WITHDRAW_HOLD_HOURS = "72"         # card deposits can't be cashed out until this old (chargeback protection)
+WITHDRAW_AUTO_MAX_CENTS = "25000"  # cash-outs above this wait for you to approve them
+PAYOUTS = "connect"                # "connect" = automatic Stripe Connect transfers; "manual" = you pay every request yourself
+
 # Secrets (set with `npx wrangler secret put NAME`):
-#   STRIPE_SECRET_KEY      - for real wallet top-ups (Stripe Checkout)
-#   STRIPE_WEBHOOK_SECRET  - signing secret of the webhook pointing at /api/stripe/webhook
-#   ADMIN_SECRET           - for approving withdrawals
+#   STRIPE_SECRET_KEY              - deposits (Checkout), payout accounts and transfers (Connect)
+#   STRIPE_WEBHOOK_SECRET          - signing secret of the platform webhook pointing at /api/stripe/webhook
+#   STRIPE_CONNECT_WEBHOOK_SECRET  - signing secret of the Connect webhook (account.updated) at the same URL
+#   ADMIN_SECRET                   - for the admin endpoints (withdrawal review, unlocks, summary)
+# Email needs no secret: it goes through the EMAIL binding above.

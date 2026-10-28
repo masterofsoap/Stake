@@ -3,9 +3,9 @@ const fs = require('fs');
 const file = process.argv[2];
 const j = JSON.parse(fs.readFileSync(file, 'utf8'));
 const e = j.expo || (j.expo = {});
-const bid = process.env.BUNDLE_ID || 'com.example.stake';
-e.name = 'Stake';
-e.slug = 'stake';
+const bid = process.env.BUNDLE_ID || 'app.gostake';
+e.name = 'Go Stake';
+e.slug = 'gostake';
 e.userInterfaceStyle = 'dark';
 if (e.splash) e.splash.backgroundColor = '#0B0F0D';
 e.plugins = (e.plugins || []).map((p) =>

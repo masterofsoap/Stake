@@ -5,7 +5,26 @@ CREATE TABLE IF NOT EXISTS users (
   pw_hash TEXT NOT NULL,
   name TEXT NOT NULL,              -- display name
   state TEXT NOT NULL DEFAULT 'XX',
+  email TEXT,                               -- lowercase; unique, see index below
+  email_verified INTEGER NOT NULL DEFAULT 0,
+  stripe_account_id TEXT,                   -- Stripe Connect Express account that receives cash-outs
+  payouts_enabled INTEGER NOT NULL DEFAULT 0,
+  cash_locked INTEGER NOT NULL DEFAULT 0,   -- set by a chargeback: no cash play or cash-outs until reviewed
+  excluded_until TEXT,                      -- self-exclusion from cash play (can only be extended)
   created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Live one-time email codes (confirm email, reset password). One per email + purpose; stored hashed.
+CREATE TABLE IF NOT EXISTS email_codes (
+  email TEXT NOT NULL,
+  purpose TEXT NOT NULL,           -- verify | reset
+  user_id TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (email, purpose)
 );
 
 -- One row per signed-in device, so logging in on a second phone doesn't sign out the first.
@@ -20,13 +39,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL,
-  type TEXT NOT NULL,          -- deposit | stake | refund | payout | withdrawal | withdrawal_reversal
+  type TEXT NOT NULL,          -- deposit | stake | refund | payout | withdrawal | withdrawal_reversal | chargeback
   amount_cents INTEGER NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'play',   -- play | cash: two wallets that never mix
   pot_id TEXT,
   ref TEXT UNIQUE,
   created_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger(user_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger(user_id, currency);
 
 CREATE TABLE IF NOT EXISTS pots (
   id TEXT PRIMARY KEY,
@@ -47,6 +67,7 @@ CREATE TABLE IF NOT EXISTS pots (
   is_public INTEGER NOT NULL DEFAULT 0,   -- 1 = anyone can find and join it
   starts_at TEXT,                         -- public pots: scheduled auto-start day
   rollovers INTEGER NOT NULL DEFAULT 0,   -- public pots: times the start was pushed back for lack of players
+  currency TEXT NOT NULL DEFAULT 'play',  -- play | cash
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pots_public ON pots(is_public, status);
@@ -82,6 +103,8 @@ CREATE TABLE IF NOT EXISTS withdrawals (
   user_id TEXT NOT NULL,
   amount_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | rejected
+  transfer_id TEXT,                        -- Stripe transfer to the user's Connect account
+  note TEXT NOT NULL DEFAULT '',           -- why it is waiting for review
   created_at TEXT NOT NULL
 );
 
@@ -92,10 +115,20 @@ CREATE TABLE IF NOT EXISTS results (
   won INTEGER NOT NULL,
   net_cents INTEGER NOT NULL,      -- payout minus stake (negative for a loss)
   is_public INTEGER NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'play',
   settled_at TEXT NOT NULL,
   PRIMARY KEY (pot_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_results_board ON results(is_public, settled_at);
+
+-- Card payments behind cash deposits, so a chargeback can be traced back to its user.
+CREATE TABLE IF NOT EXISTS stripe_payments (
+  payment_intent TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 
 -- Fixed-window rate limiting counters.
 CREATE TABLE IF NOT EXISTS rate_limits (

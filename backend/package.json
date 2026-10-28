@@ -8,6 +8,8 @@
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 execute stake --local --file=schema.sql",
     "db:remote": "wrangler d1 execute stake --remote --file=schema.sql",
+    "db:migrate:remote:cash": "wrangler d1 execute stake --remote --file=migrations/cash.sql",
+    "db:migrate:remote:email": "wrangler d1 execute stake --remote --file=migrations/email.sql",
     "test": "bun test/run.mjs && bun test/public.mjs && bun test/contract.mjs && bun test/seed.mjs"
   },
   "devDependencies": {

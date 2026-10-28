@@ -9,10 +9,11 @@ sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
 const DB = { prepare(sql) { let a = []; const st = sqlite.prepare(sql); const o = { bind(...x) { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => ({ meta: { changes: st.run(...a).changes } }), _exec() { return { meta: { changes: st.run(...a).changes } }; } }; return o; },
   async batch(s) { sqlite.exec('BEGIN'); try { const r = s.map((x) => x._exec()); sqlite.exec('COMMIT'); return r; } catch (e) { sqlite.exec('ROLLBACK'); throw e; } } };
 // same settings as wrangler.toml, rate limits ON like real life
-const env = { DB, DEMO_MODE: 'true', DEMO_BONUS_CENTS: '5000', ADMIN_SECRET: 'x', RAKE_BPS: '1000', BLOCKED_STATES: '', RATE_LIMIT: 'on' };
+const env = { DB, PLAY_BONUS_CENTS: '5000', ADMIN_SECRET: 'x', RAKE_BPS: '1000', BLOCKED_STATES: '', RATE_LIMIT: 'on' };
 globalThis.fetch = (url, opts) => worker.fetch(new Request(url, opts), env);
 
 let fails = 0, passes = 0;
+let emN = 0; const em = () => 'p' + ++emN + '@t.test'; // unique email per signup
 const ok = (n, c, x) => { if (c) passes++; else { fails++; console.log('FAIL', n, x ?? ''); } };
 
 const n = await seed('https://api.test', () => {});
@@ -24,7 +25,7 @@ ok('running it again changes nothing', (await seed('https://api.test', () => {})
 
 // a brand-new person on their first run: sign up, get $50, tap Play anyone, land with the bots
 const call = async (p, o = {}) => (await globalThis.fetch('https://api.test' + p, { method: o.method || 'GET', headers: { 'content-type': 'application/json', ...(o.token ? { authorization: 'Bearer ' + o.token } : {}) }, body: o.body ? JSON.stringify(o.body) : undefined })).json();
-const me = await call('/api/signup', { method: 'POST', body: { name: 'You', password: 'mypass', adult: true } });
+const me = await call('/api/signup', { method: 'POST', body: { name: 'You', password: 'mypass', adult: true, email: em() } });
 ok('first-run signup works with just name + password', !!me.token, me);
 ok('and starts with $50', (await call('/api/wallet', { token: me.token })).balanceCents === 5000);
 const play = await call('/api/public/play', { method: 'POST', token: me.token, body: { goalType: 'move', durationDays: 7, stakeCents: 1000 } });

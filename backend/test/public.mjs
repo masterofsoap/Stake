@@ -5,6 +5,7 @@ import worker, { settleDue } from '../src/index.js';
 import { addDays } from '../src/rules.js';
 
 let fails = 0, passes = 0;
+let emN = 0; const em = () => 'p' + ++emN + '@t.test'; // unique email per signup
 const ok = (name, cond, extra) => { if (cond) passes++; else { fails++; console.log('FAIL ' + name, extra !== undefined ? JSON.stringify(extra) : ''); } };
 const today = new Date().toISOString().slice(0, 10);
 
@@ -13,7 +14,7 @@ function fresh(extra = {}) {
   sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
   const DB = { prepare(sql) { let a = []; const st = sqlite.prepare(sql); const o = { bind(...x) { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => ({ meta: { changes: st.run(...a).changes } }), _exec() { return { meta: { changes: st.run(...a).changes } }; } }; return o; },
     async batch(s) { sqlite.exec('BEGIN'); try { const r = s.map((x) => x._exec()); sqlite.exec('COMMIT'); return r; } catch (e) { sqlite.exec('ROLLBACK'); throw e; } } };
-  const env = { DB, DEMO_MODE: 'true', ADMIN_SECRET: 'adm', RAKE_BPS: '1000', BLOCKED_STATES: '', RATE_LIMIT: 'off', ...extra };
+  const env = { DB, ADMIN_SECRET: 'adm', RAKE_BPS: '1000', BLOCKED_STATES: '', RATE_LIMIT: 'off', ...extra };
   const call = async (method, path, { token, body, headers } = {}) => {
     const r = await worker.fetch(new Request('https://api.test' + path, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(headers || {}) }, body: body ? JSON.stringify(body) : undefined }), env);
     let data = null; try { data = await r.json(); } catch {}
@@ -25,7 +26,7 @@ let uniq = 0;
 async function mkUsers(call, n, cash = 10000) {
   const us = [];
   for (let i = 0; i < n; i++) {
-    const s = await call('POST', '/api/signup', { body: { name: 'P' + (uniq++), state: 'CO', password: 'pw1234', adult: true } });
+    const s = await call('POST', '/api/signup', { body: { name: 'P' + (uniq++), state: 'CO', password: 'pw1234', adult: true, email: em() } });
     await call('POST', '/api/wallet/checkout', { token: s.data.token, body: { amountCents: cash } });
     us.push({ ...s.data, i });
   }
@@ -190,13 +191,13 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
 
 /* ---- login ---- */
 {
-  const { sqlite, call } = fresh({ DEMO_BONUS_CENTS: '5000' });
-  const s1 = await call('POST', '/api/signup', { body: { name: 'Zed', password: 'hunter22', adult: true } });
+  const { sqlite, call } = fresh({ PLAY_BONUS_CENTS: '5000' });
+  const s1 = await call('POST', '/api/signup', { body: { name: 'Zed', password: 'hunter22', adult: true, email: em() } });
   ok('signup works with just name + password + 18+', s1.status === 200 && s1.data.token && s1.data.userId, s1);
   ok('new play-money accounts start with the bonus', (await call('GET', '/api/wallet', { token: s1.data.token })).data.balanceCents === 5000);
-  const dup = await call('POST', '/api/signup', { body: { name: 'zED', password: 'other1', adult: true } });
+  const dup = await call('POST', '/api/signup', { body: { name: 'zED', password: 'other1', adult: true, email: em() } });
   ok('names are unique, ignoring case', dup.status === 409 && dup.data.error === 'name_taken', dup);
-  ok('short password refused', (await call('POST', '/api/signup', { body: { name: 'Pip', password: 'abc', adult: true } })).data.error === 'bad_password');
+  ok('short password refused', (await call('POST', '/api/signup', { body: { name: 'Pip', password: 'abc', adult: true, email: em() } })).data.error === 'bad_password');
   ok('password is not stored in the clear', !JSON.stringify(sqlite.query('SELECT * FROM users').all()).includes('hunter22'));
   const l = await call('POST', '/api/login', { body: { name: 'ZED', password: 'hunter22' } });
   ok('login works (name ignores case)', l.status === 200 && l.data.userId === s1.data.userId && l.data.token !== s1.data.token, l);
@@ -205,7 +206,7 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
   ok('wrong password refused', (await call('POST', '/api/login', { body: { name: 'Zed', password: 'nope' } })).status === 401);
   ok('unknown name refused the same way', (await call('POST', '/api/login', { body: { name: 'Nobody', password: 'nope' } })).data.error === 'bad_login');
   ok('empty login refused', (await call('POST', '/api/login', { body: {} })).status === 401);
-  const nb = fresh(); const s2 = await nb.call('POST', '/api/signup', { body: { name: 'Kay', password: 'abcd', adult: true } });
+  const nb = fresh(); const s2 = await nb.call('POST', '/api/signup', { body: { name: 'Kay', password: 'abcd', adult: true, email: em() } });
   ok('no bonus unless configured', (await nb.call('GET', '/api/wallet', { token: s2.data.token })).data.balanceCents === 0);
 }
 
@@ -214,11 +215,11 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
   const { call } = fresh({ RATE_LIMIT: 'on' });
   const ip = { 'cf-connecting-ip': '1.2.3.4' };
   let last;
-  for (let i = 0; i < 11; i++) last = await call('POST', '/api/signup', { body: { name: 'Spam' + i, state: 'CO', password: 'pw1234', adult: true }, headers: ip });
+  for (let i = 0; i < 11; i++) last = await call('POST', '/api/signup', { body: { name: 'Spam' + i, state: 'CO', password: 'pw1234', adult: true, email: em() }, headers: ip });
   ok('11th signup from one IP in an hour is limited', last.status === 429, last);
-  const other = await call('POST', '/api/signup', { body: { name: 'Fine', state: 'CO', password: 'pw1234', adult: true }, headers: { 'cf-connecting-ip': '5.6.7.8' } });
+  const other = await call('POST', '/api/signup', { body: { name: 'Fine', state: 'CO', password: 'pw1234', adult: true, email: em() }, headers: { 'cf-connecting-ip': '5.6.7.8' } });
   ok('other IPs unaffected', other.status === 200);
-  await call('POST', '/api/signup', { body: { name: 'Victim', password: 'strongpass', adult: true }, headers: { 'cf-connecting-ip': '7.7.7.7' } });
+  await call('POST', '/api/signup', { body: { name: 'Victim', password: 'strongpass', adult: true, email: em() }, headers: { 'cf-connecting-ip': '7.7.7.7' } });
   let rl; for (let i = 0; i < 12; i++) rl = await call('POST', '/api/login', { body: { name: 'Victim', password: 'guess' + i }, headers: { 'cf-connecting-ip': '8.8.8.' + i } });
   ok('password guessing on one account is rate limited, even across IPs', rl.status === 429, rl.status);
   ok('even the right password is blocked while locked out', (await call('POST', '/api/login', { body: { name: 'Victim', password: 'strongpass' }, headers: { 'cf-connecting-ip': '8.8.9.9' } })).status === 429);
@@ -229,7 +230,7 @@ const play = (call, u, o = {}) => call('POST', '/api/public/play', { token: u.to
   ok('oversized body refused', big.status === 413);
   const h = await worker.fetch(new Request('https://api.test/j/ABCDEF'), { DB: { prepare: () => ({ bind: () => ({ first: async () => null }) }) } });
   ok('HTML pages carry CSP + frame deny', /default-src 'none'/.test(h.headers.get('content-security-policy')) && h.headers.get('x-frame-options') === 'DENY');
-  const sn = await call('POST', '/api/signup', { body: { name: '<img onerror=x>  A\u0000B', state: 'CO', password: 'pw1234', adult: true }, headers: { 'cf-connecting-ip': '9.9.9.9' } });
+  const sn = await call('POST', '/api/signup', { body: { name: '<img onerror=x>  A\u0000B', state: 'CO', password: 'pw1234', adult: true, email: em() }, headers: { 'cf-connecting-ip': '9.9.9.9' } });
   ok('names are stripped of markup and control chars', sn.data.name === 'img onerror=x AB', sn.data.name);
 }
 

@@ -5,10 +5,20 @@ const CORS = {
   'access-control-allow-headers': 'authorization,content-type,x-admin-secret',
   'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
 };
-const json = (data, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...CORS } });
+const SEC = { 'x-content-type-options': 'nosniff', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
+const json = (data, status = 200, extra = {}) =>
+  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...SEC, ...CORS, ...extra } });
 const html = (body, status = 200) =>
-  new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-robots-tag': 'noindex' } });
+  new Response(body, {
+    status,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      ...SEC,
+      'x-robots-tag': 'noindex',
+      'x-frame-options': 'DENY',
+      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    },
+  });
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const clip = (v, n) => String(v == null ? '' : v).slice(0, n);
@@ -21,6 +31,18 @@ const MIN_TOPUP = 500;
 const MAX_TOPUP = 50000;
 const MIN_WITHDRAW = 1000;
 
+// Public pots are server-defined so strangers never see user-written text: fixed goals, fixed stakes.
+const PUBLIC_STAKES = [500, 1000, 2500, 5000];
+const PUBLIC_MAX_MEMBERS = 12;
+const PUBLIC_GOALS = {
+  quit: { name: 'Quit Crew', text: 'Stayed nicotine-free today' },
+  sleep: { name: 'Sleep Club', text: 'In bed on time, 7+ hours' },
+  move: { name: 'Move Squad', text: '30 minutes of exercise' },
+  sober: { name: 'Dry Run', text: 'No alcohol today' },
+  eat: { name: 'Clean Plate', text: 'Ate clean all day' },
+};
+const MAX_BODY = 20000;
+
 /* ---------- helpers ---------- */
 
 const enc = new TextEncoder();
@@ -32,6 +54,26 @@ const nowIso = () => new Date().toISOString();
 const utcToday = () => nowIso().slice(0, 10);
 const bearer = (req) => (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
 const rakeBps = (env) => Math.min(Math.max(parseInt(env.RAKE_BPS, 10) || 1000, 0), 5000);
+
+// Fixed-window counter in D1. Returns true when the caller is over the limit.
+async function limited(env, key, max, windowSec) {
+  if (env.RATE_LIMIT === 'off') return false;
+  const w = Math.floor(Date.now() / 1000 / windowSec);
+  const k = `${key}:${w}`;
+  await env.DB.prepare('INSERT INTO rate_limits (k, n, expires_at) VALUES (?, 1, ?) ON CONFLICT(k) DO UPDATE SET n = n + 1')
+    .bind(k, (w + 2) * windowSec)
+    .run();
+  const r = await env.DB.prepare('SELECT n FROM rate_limits WHERE k = ?').bind(k).first();
+  return !!r && r.n > max;
+}
+const clientIp = (req) => req.headers.get('cf-connecting-ip') || 'local';
+const cleanName = (v) => clip(v, 20).replace(/[\u0000-\u001f\u007f<>]/g, '').replace(/\s+/g, ' ').trim();
+const RECOVERY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const newRecoveryCode = () => {
+  const c = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join('');
+  return c.match(/.{4}/g).join('-');
+};
+const normRecovery = (v) => clip(v, 40).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 async function readJson(req) {
   try {
@@ -70,7 +112,7 @@ async function chargeIfFunded(env, userId, type, amount, potId, ref) {
 async function signup(req, env) {
   const b = await readJson(req);
   if (!b) return json({ error: 'bad_request' }, 400);
-  const name = clip(b.name, 20).trim();
+  const name = cleanName(b.name);
   const state = clip(b.state, 2).toUpperCase();
   if (b.adult !== true) return json({ error: 'must_be_18' }, 403);
   if (name.length < 2 || !/^[A-Z]{2}$/.test(state)) return json({ error: 'bad_request' }, 400);
@@ -78,10 +120,23 @@ async function signup(req, env) {
   if (blocked.includes(state)) return json({ error: 'not_available_in_state' }, 403);
   const id = 'u_' + randHex(6);
   const token = 'sk_' + randHex(24);
-  await env.DB.prepare('INSERT INTO users (id, token_hash, name, state, created_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(id, await sha256(token), name, state, nowIso())
+  const recoveryCode = newRecoveryCode();
+  await env.DB.prepare('INSERT INTO users (id, token_hash, name, state, created_at, recovery_hash) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(id, await sha256(token), name, state, nowIso(), await sha256('rc:' + normRecovery(recoveryCode)))
     .run();
-  return json({ userId: id, token, name });
+  return json({ userId: id, token, name, recoveryCode });
+}
+
+// Lost phone? The recovery code issued at signup mints a fresh token (and kills the old one).
+async function recover(req, env) {
+  const b = await readJson(req);
+  const code = normRecovery(b && b.code);
+  if (code.length !== 16) return json({ error: 'bad_code' }, 404);
+  const u = await env.DB.prepare('SELECT * FROM users WHERE recovery_hash = ?').bind(await sha256('rc:' + code)).first();
+  if (!u) return json({ error: 'bad_code' }, 404);
+  const token = 'sk_' + randHex(24);
+  await env.DB.prepare('UPDATE users SET token_hash = ? WHERE id = ?').bind(await sha256(token), u.id).run();
+  return json({ userId: u.id, token, name: u.name });
 }
 
 async function potSummaryRows(env, userId) {
@@ -111,6 +166,8 @@ const potPublic = (p) => ({
   memberCount: p.member_count,
   potCents: p.stake_cents * (p.member_count || 0),
   rakeCents: p.rake_cents,
+  isPublic: !!p.is_public,
+  startsAt: p.starts_at || null,
 });
 
 async function me(req, env) {
@@ -118,7 +175,14 @@ async function me(req, env) {
   if (!u) return json({ error: 'unauthorized' }, 401);
   await settleDue(env);
   const pots = await potSummaryRows(env, u.id);
-  return json({ user: { id: u.id, name: u.name }, balanceCents: await balanceOf(env, u.id), demoMode: env.DEMO_MODE === 'true', pots: pots.map(potPublic) });
+  const st = await env.DB.prepare('SELECT COUNT(*) AS played, COALESCE(SUM(won), 0) AS wins, COALESCE(SUM(net_cents), 0) AS net FROM results WHERE user_id = ?').bind(u.id).first();
+  return json({
+    user: { id: u.id, name: u.name },
+    balanceCents: await balanceOf(env, u.id),
+    demoMode: env.DEMO_MODE === 'true',
+    pots: pots.map(potPublic),
+    stats: { played: st.played, wins: st.wins, netCents: st.net },
+  });
 }
 
 /* ---------- wallet ---------- */
@@ -140,6 +204,7 @@ async function wallet(req, env) {
 async function checkout(req, env) {
   const u = await userAuth(req, env);
   if (!u) return json({ error: 'unauthorized' }, 401);
+  if (await limited(env, 'pay:' + u.id, 10, 60)) return json({ error: 'rate_limited' }, 429);
   const b = await readJson(req);
   const amount = parseInt(b && b.amountCents, 10);
   if (!(amount >= MIN_TOPUP && amount <= MAX_TOPUP)) return json({ error: 'bad_amount' }, 400);
@@ -222,6 +287,7 @@ async function stripeWebhook(req, env) {
 async function withdraw(req, env) {
   const u = await userAuth(req, env);
   if (!u) return json({ error: 'unauthorized' }, 401);
+  if (await limited(env, 'pay:' + u.id, 10, 60)) return json({ error: 'rate_limited' }, 429);
   const b = await readJson(req);
   const amount = parseInt(b && b.amountCents, 10);
   if (!(amount >= MIN_WITHDRAW)) return json({ error: 'bad_amount' }, 400);
@@ -276,7 +342,14 @@ async function joinInternal(env, user, pot) {
     return 'already_joined'; // unique ref: this stake was already taken
   }
   if (!charged) return 'insufficient_funds';
-  await env.DB.prepare('INSERT INTO members (pot_id, user_id, joined_at) VALUES (?, ?, ?)').bind(pot.id, user.id, nowIso()).run();
+  // only while the pot is still open: a pot that started a millisecond ago must not take a late joiner
+  const ins = await env.DB.prepare("INSERT INTO members (pot_id, user_id, joined_at) SELECT ?, ?, ? WHERE (SELECT status FROM pots WHERE id = ?) = 'open'")
+    .bind(pot.id, user.id, nowIso(), pot.id)
+    .run();
+  if (ins.meta.changes !== 1) {
+    await ledgerInsert(env, user.id, 'refund', pot.stake_cents, pot.id, `undo:${pot.id}:${user.id}`, nowIso()).run();
+    return 'not_open';
+  }
   const after = (await env.DB.prepare('SELECT COUNT(*) AS c FROM members WHERE pot_id = ?').bind(pot.id).first()).c;
   if (after > pot.max_members) {
     // lost a race for the last seat: give the money back
@@ -284,7 +357,16 @@ async function joinInternal(env, user, pot) {
     await ledgerInsert(env, user.id, 'refund', pot.stake_cents, pot.id, `undo:${pot.id}:${user.id}`, nowIso()).run();
     return 'full';
   }
+  // a full public pot starts right away, no waiting for the clock
+  if (pot.is_public && after >= pot.max_members) await activatePot(env, pot, utcToday());
   return 'ok';
+}
+
+async function activatePot(env, pot, start) {
+  const r = await env.DB.prepare("UPDATE pots SET status = 'active', start_date = ?, end_date = ? WHERE id = ? AND status = 'open'")
+    .bind(start, addDays(start, pot.duration_days - 1), pot.id)
+    .run();
+  return r.meta.changes === 1;
 }
 const JOIN_ERRORS = { not_open: 409, already_joined: 409, full: 409, insufficient_funds: 402 };
 
@@ -411,14 +493,12 @@ async function startPot(req, env, potId) {
   if (!u) return json({ error: 'unauthorized' }, 401);
   const { pot, isMember } = await loadPot(env, potId, u.id);
   if (!pot || !isMember) return json({ error: 'not_found' }, 404);
+  if (pot.is_public) return json({ error: 'public_auto' }, 409);
   if (pot.creator_id !== u.id) return json({ error: 'forbidden' }, 403);
   if (pot.status !== 'open') return json({ error: 'not_open' }, 409);
   if (pot.member_count < 2) return json({ error: 'need_two_members' }, 409);
   const start = utcToday();
-  const upd = await env.DB.prepare("UPDATE pots SET status = 'active', start_date = ?, end_date = ? WHERE id = ? AND status = 'open'")
-    .bind(start, addDays(start, pot.duration_days - 1), potId)
-    .run();
-  if (upd.meta.changes !== 1) return json({ error: 'not_open' }, 409);
+  if (!(await activatePot(env, pot, start))) return json({ error: 'not_open' }, 409);
   return json({ ok: true, startDate: start });
 }
 
@@ -433,6 +513,7 @@ async function cancelPot(req, env, potId) {
   if (!u) return json({ error: 'unauthorized' }, 401);
   const { pot, isMember } = await loadPot(env, potId, u.id);
   if (!pot || !isMember) return json({ error: 'not_found' }, 404);
+  if (pot.is_public) return json({ error: 'public_auto' }, 409);
   if (pot.creator_id !== u.id) return json({ error: 'forbidden' }, 403);
   if (pot.status !== 'open') return json({ error: 'not_open' }, 409);
   const ids = (await env.DB.prepare('SELECT user_id FROM members WHERE pot_id = ?').bind(potId).all()).results.map((r) => r.user_id);
@@ -451,7 +532,7 @@ async function leavePot(req, env, potId) {
   if (!u) return json({ error: 'unauthorized' }, 401);
   const { pot, isMember } = await loadPot(env, potId, u.id);
   if (!pot || !isMember) return json({ error: 'not_found' }, 404);
-  if (pot.creator_id === u.id) return json({ error: 'creator_must_cancel' }, 409);
+  if (pot.creator_id === u.id && !pot.is_public) return json({ error: 'creator_must_cancel' }, 409);
   if (pot.status !== 'open') return json({ error: 'not_open' }, 409);
   try {
     await env.DB.batch([
@@ -513,6 +594,15 @@ export async function settlePot(env, pot) {
   const res = settle(pot, members, progress, rakeBps(env));
   const ts = nowIso();
   const stmts = res.entries.map((e) => ledgerInsert(env, e.user_id, e.type, e.amount_cents, pot.id, `settle:${pot.id}:${e.user_id}`, ts));
+  const paid = new Map(res.entries.map((e) => [e.user_id, e.amount_cents]));
+  const everyoneWon = res.losers === 0;
+  const winnerIds = new Set(everyoneWon ? members.map((m) => m.user_id) : members.filter((m) => progress[m.user_id].finalMisses <= allowedMisses(pot)).map((m) => m.user_id));
+  for (const m of members) {
+    stmts.push(
+      env.DB.prepare('INSERT OR IGNORE INTO results (pot_id, user_id, won, net_cents, is_public, settled_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(pot.id, m.user_id, winnerIds.has(m.user_id) ? 1 : 0, (paid.get(m.user_id) || 0) - pot.stake_cents, pot.is_public ? 1 : 0, ts)
+    );
+  }
   stmts.push(
     env.DB.prepare("UPDATE pots SET status = 'settled', settled_at = ?, rake_cents = ? WHERE id = ? AND status = 'active'").bind(ts, res.rake_cents, pot.id)
   );
@@ -524,11 +614,144 @@ export async function settlePot(env, pot) {
   }
 }
 
+// Public pots start by themselves: when full (see joinInternal) or when their start day arrives.
+// Not enough players on the day? Push the start back (up to 3 times), then refund and close.
+export async function startDuePublic(env) {
+  const today = utcToday();
+  const due = (
+    await env.DB.prepare(
+      `SELECT p.*, (SELECT COUNT(*) FROM members WHERE pot_id = p.id) AS member_count
+       FROM pots p WHERE p.is_public = 1 AND p.status = 'open' AND p.starts_at <= ?`
+    ).bind(today).all()
+  ).results;
+  for (const p of due) {
+    if (p.member_count >= 2) {
+      await activatePot(env, p, today);
+    } else if (p.member_count === 0) {
+      await env.DB.prepare("UPDATE pots SET status = 'cancelled' WHERE id = ? AND status = 'open'").bind(p.id).run();
+    } else if (p.rollovers < 3) {
+      await env.DB.prepare('UPDATE pots SET starts_at = ?, rollovers = rollovers + 1 WHERE id = ? AND status = \'open\'').bind(addDays(today, 1), p.id).run();
+    } else {
+      const ids = (await env.DB.prepare('SELECT user_id FROM members WHERE pot_id = ?').bind(p.id).all()).results.map((r) => r.user_id);
+      const stmts = await refundAll(env, p, ids, 'cancel');
+      stmts.push(env.DB.prepare("UPDATE pots SET status = 'cancelled' WHERE id = ? AND status = 'open'").bind(p.id));
+      try { await env.DB.batch(stmts); } catch (e) { /* already handled */ }
+    }
+  }
+  return due.length;
+}
+
 export async function settleDue(env) {
+  await startDuePublic(env);
   const cutoff = addDays(utcToday(), -1);
   const due = (await env.DB.prepare("SELECT * FROM pots WHERE status = 'active' AND end_date < ?").bind(cutoff).all()).results;
   for (const p of due) await settlePot(env, p);
   return due.length;
+}
+
+/* ---------- public pots + leaderboard ---------- */
+
+const publicRow = (p) => ({ ...potPublic(p), joinCode: undefined, creatorId: undefined });
+
+// Browse: open public pots with free seats, fullest first (closest to starting).
+async function publicList(req, env) {
+  const u = await userAuth(req, env);
+  if (!u) return json({ error: 'unauthorized' }, 401);
+  await settleDue(env);
+  const url = new URL(req.url);
+  const goal = url.searchParams.get('goalType');
+  const rows = (
+    await env.DB.prepare(
+      `SELECT p.*, (SELECT COUNT(*) FROM members WHERE pot_id = p.id) AS member_count,
+              (SELECT COUNT(*) FROM members WHERE pot_id = p.id AND user_id = ?) AS mine
+       FROM pots p WHERE p.is_public = 1 AND p.status = 'open' AND (? = '' OR p.goal_type = ?)
+       ORDER BY member_count DESC, p.starts_at ASC LIMIT 60`
+    ).bind(u.id, goal || '', goal || '').all()
+  ).results.filter((p) => p.member_count < p.max_members);
+  const active = (await env.DB.prepare("SELECT COUNT(*) AS c FROM members m JOIN pots p ON p.id = m.pot_id WHERE p.is_public = 1 AND p.status = 'active'").first()).c;
+  return json({ pots: rows.map((p) => ({ ...publicRow(p), joined: !!p.mine })), playersLive: active });
+}
+
+async function joinPublicById(req, env, potId) {
+  const u = await userAuth(req, env);
+  if (!u) return json({ error: 'unauthorized' }, 401);
+  if (await limited(env, 'join:' + u.id, 30, 60)) return json({ error: 'rate_limited' }, 429);
+  const pot = await env.DB.prepare('SELECT * FROM pots WHERE id = ? AND is_public = 1').bind(potId).first();
+  if (!pot) return json({ error: 'not_found' }, 404);
+  const res = await joinInternal(env, u, pot);
+  if (res !== 'ok') return json({ error: res }, JOIN_ERRORS[res] || 400);
+  return json({ id: pot.id });
+}
+
+// Quick match: put me in the best matching open public pot, or open a new one for others to fill.
+async function playPublic(req, env) {
+  const u = await userAuth(req, env);
+  if (!u) return json({ error: 'unauthorized' }, 401);
+  if (await limited(env, 'join:' + u.id, 30, 60)) return json({ error: 'rate_limited' }, 429);
+  const b = await readJson(req);
+  if (!b) return json({ error: 'bad_request' }, 400);
+  const goal = PUBLIC_GOALS[b.goalType];
+  const duration = parseInt(b.durationDays, 10);
+  const stake = parseInt(b.stakeCents, 10);
+  if (!goal || !DURATIONS.includes(duration) || !PUBLIC_STAKES.includes(stake)) return json({ error: 'bad_request' }, 400);
+  await startDuePublic(env);
+  const cands = (
+    await env.DB.prepare(
+      `SELECT p.*, (SELECT COUNT(*) FROM members WHERE pot_id = p.id) AS member_count
+       FROM pots p WHERE p.is_public = 1 AND p.status = 'open' AND p.goal_type = ? AND p.duration_days = ? AND p.stake_cents = ?
+         AND NOT EXISTS (SELECT 1 FROM members m WHERE m.pot_id = p.id AND m.user_id = ?)
+       ORDER BY member_count DESC, p.created_at ASC LIMIT 5`
+    ).bind(b.goalType, duration, stake, u.id).all()
+  ).results.filter((p) => p.member_count < p.max_members);
+  let last = 'full';
+  for (const p of cands) {
+    const res = await joinInternal(env, u, p);
+    if (res === 'ok') return json({ id: p.id, created: false });
+    if (res === 'insufficient_funds') return json({ error: res }, 402);
+    last = res;
+  }
+  // nothing open: start a lobby. Gives others at least 12 hours to find it before it can start.
+  const hour = new Date().getUTCHours();
+  const startsAt = addDays(utcToday(), hour >= 12 ? 2 : 1);
+  const id = 'g_' + randHex(5);
+  let code = '';
+  for (let i = 0; i < 6 && !code; i++) {
+    const c = randCode(6);
+    try {
+      await env.DB.prepare(
+        `INSERT INTO pots (id, name, goal_type, goal_text, duration_days, stake_cents, max_members, strict, join_code, creator_id, is_public, starts_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?)`
+      ).bind(id, goal.name, b.goalType, goal.text, duration, stake, PUBLIC_MAX_MEMBERS, c, u.id, startsAt, nowIso()).run();
+      code = c;
+    } catch (e) {}
+  }
+  if (!code) return json({ error: 'server_error' }, 500);
+  const pot = await env.DB.prepare('SELECT * FROM pots WHERE id = ?').bind(id).first();
+  const res = await joinInternal(env, u, pot);
+  if (res !== 'ok') {
+    await env.DB.prepare('DELETE FROM pots WHERE id = ?').bind(id).run();
+    return json({ error: res }, JOIN_ERRORS[res] || 400);
+  }
+  return json({ id, created: true });
+}
+
+// Global board: public pots only, last 30 days, ranked by net winnings.
+async function leaderboard(req, env) {
+  const u = await userAuth(req, env);
+  if (!u) return json({ error: 'unauthorized' }, 401);
+  const since = addDays(utcToday(), -30);
+  const rows = (
+    await env.DB.prepare(
+      `SELECT r.user_id, u.name, COUNT(*) AS played, SUM(r.won) AS wins, SUM(r.net_cents) AS net
+       FROM results r JOIN users u ON u.id = r.user_id
+       WHERE r.is_public = 1 AND r.settled_at >= ?
+       GROUP BY r.user_id ORDER BY net DESC, wins DESC, played DESC, r.user_id ASC LIMIT 200`
+    ).bind(since).all()
+  ).results;
+  const shape = (r, i) => ({ rank: i + 1, name: r.name, played: r.played, wins: r.wins, netCents: r.net, isMe: r.user_id === u.id });
+  const all = rows.map(shape);
+  const mine = all.find((r) => r.isMe) || null;
+  return json({ top: all.slice(0, 25), me: mine, windowDays: 30 });
 }
 
 /* ---------- pages ---------- */
@@ -556,6 +779,10 @@ async function route(req, env) {
   const path = url.pathname;
   const m = req.method;
   if (m === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+  if (Number(req.headers.get('content-length') || 0) > MAX_BODY) return json({ error: 'too_large' }, 413);
+  if (m === 'POST' && path.startsWith('/api/') && path !== '/api/stripe/webhook' && (await limited(env, 'ip:' + clientIp(req), 120, 60))) {
+    return json({ error: 'rate_limited' }, 429, { 'retry-after': '30' });
+  }
 
   if (path === '/' || path === '/health') return json({ ok: true, service: 'stake-api' });
   if (path === '/paid') return html(page('<h1>Payment received</h1><div class="s">Head back to Stake. Your balance updates in a few seconds.</div>'));
@@ -573,7 +800,17 @@ async function route(req, env) {
     });
   }
 
-  if (path === '/api/signup' && m === 'POST') return signup(req, env);
+  if (path === '/api/signup' && m === 'POST') {
+    if (await limited(env, 'signup:' + clientIp(req), 10, 3600)) return json({ error: 'rate_limited' }, 429, { 'retry-after': '600' });
+    return signup(req, env);
+  }
+  if (path === '/api/recover' && m === 'POST') {
+    if (await limited(env, 'recover:' + clientIp(req), 10, 3600)) return json({ error: 'rate_limited' }, 429, { 'retry-after': '600' });
+    return recover(req, env);
+  }
+  if (path === '/api/public' && m === 'GET') return publicList(req, env);
+  if (path === '/api/public/play' && m === 'POST') return playPublic(req, env);
+  if (path === '/api/leaderboard' && m === 'GET') return leaderboard(req, env);
   if (path === '/api/me' && m === 'GET') return me(req, env);
   if (path === '/api/wallet' && m === 'GET') return wallet(req, env);
   if (path === '/api/wallet/checkout' && m === 'POST') return checkout(req, env);
@@ -585,10 +822,11 @@ async function route(req, env) {
 
   if (path === '/api/pots' && m === 'POST') return createPot(req, env);
   if (path === '/api/pots/join' && m === 'POST') return joinByCode(req, env);
-  const pm = path.match(/^\/api\/pots\/(g_[0-9a-f]+)(?:\/(start|cancel|leave|checkin|dispute))?$/);
+  const pm = path.match(/^\/api\/pots\/(g_[0-9a-f]+)(?:\/(start|cancel|leave|checkin|dispute|join))?$/);
   if (pm) {
     if (!pm[2] && m === 'GET') return potDetail(req, env, pm[1]);
     if (m === 'POST') {
+      if (pm[2] === 'join') return joinPublicById(req, env, pm[1]);
       if (pm[2] === 'start') return startPot(req, env, pm[1]);
       if (pm[2] === 'cancel') return cancelPot(req, env, pm[1]);
       if (pm[2] === 'leave') return leavePot(req, env, pm[1]);
@@ -608,6 +846,11 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(settleDue(env));
+    ctx.waitUntil(
+      (async () => {
+        await settleDue(env);
+        await env.DB.prepare('DELETE FROM rate_limits WHERE expires_at < ?').bind(Math.floor(Date.now() / 1000)).run();
+      })()
+    );
   },
 };

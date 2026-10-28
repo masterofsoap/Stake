@@ -8,10 +8,11 @@ const sqlite = new Database(':memory:');
 sqlite.exec(readFileSync(new URL('../schema.sql', import.meta.url), 'utf8'));
 const DB = { prepare(sql) { let a = []; const st = sqlite.prepare(sql); const o = { bind(...x) { a = x; return o; }, first: async () => st.get(...a) ?? null, all: async () => ({ results: st.all(...a) }), run: async () => ({ meta: { changes: st.run(...a).changes } }), _exec() { return { meta: { changes: st.run(...a).changes } }; } }; return o; },
   async batch(s) { sqlite.exec('BEGIN'); try { const r = s.map((x) => x._exec()); sqlite.exec('COMMIT'); return r; } catch (e) { sqlite.exec('ROLLBACK'); throw e; } } };
-const env = { DB, DEMO_MODE: 'true', ADMIN_SECRET: 'x', RAKE_BPS: '1000', BLOCKED_STATES: '' };
+const env = { DB, DEMO_MODE: 'true', ADMIN_SECRET: 'x', RAKE_BPS: '1000', BLOCKED_STATES: '', RATE_LIMIT: 'off' };
 globalThis.fetch = (url, opts) => worker.fetch(new Request('https://api.test' + url, opts), env);
 
 let fails = 0, passes = 0;
+const { errMsg } = await import('../../src/util.js');
 const has = (label, obj, spec) => { for (const [k, t] of Object.entries(spec)) { const v = obj == null ? undefined : obj[k]; const good = t === 'array' ? Array.isArray(v) : t === 'any' ? v !== undefined : typeof v === t; if (good) passes++; else { fails++; console.log(`FAIL ${label}.${k}: expected ${t}, got ${JSON.stringify(v)}`); } } };
 
 const A = await api.signup('Ann', 'CO'), B = await api.signup('Ben', 'CO');
@@ -48,8 +49,36 @@ has('wallet.entries[0]', w.entries[0], { type: 'string', amount_cents: 'number' 
 const wd = await api.withdraw(A.token, 1000); has('withdraw', wd, { id: 'string', status: 'string' });
 const w2 = await api.wallet(A.token); has('wallet.withdrawals[0]', w2.withdrawals[0], { id: 'string', status: 'string', amount_cents: 'number' });
 
+
+// ---- public play, leaderboard, recovery: every field the new screens read
+{
+  const C1 = await api.signup('Cy', 'CO'), C2 = await api.signup('Di', 'TX');
+  has('signup.recoveryCode', C1, { recoveryCode: 'string' });
+  await api.checkout(C1.token, 5000); await api.checkout(C2.token, 5000);
+  const pp = await api.playPublic(C1.token, { goalType: 'sleep', durationDays: 7, stakeCents: 1000 });
+  has('playPublic', pp, { id: 'string', created: 'boolean' });
+  const pp2 = await api.playPublic(C2.token, { goalType: 'sleep', durationDays: 7, stakeCents: 1000 });
+  if (pp2.id !== pp.id) { fails++; console.log('FAIL second player not matched'); } else passes++;
+  const list = await api.publicPots(C1.token);
+  has('publicPots', list, { pots: 'array', playersLive: 'number' });
+  const row = list.pots.find((p) => p.id === pp.id);
+  has('publicPots.pots[]', row, { id: 'string', name: 'string', goalType: 'string', goalText: 'string', potCents: 'number', stakeCents: 'number', durationDays: 'number', memberCount: 'number', maxMembers: 'number', startsAt: 'string', joined: 'boolean' });
+  const det = await api.pot(C1.token, pp.id);
+  has('pot(public).pot', det.pot, { isPublic: 'boolean', startsAt: 'string', status: 'string', memberCount: 'number', maxMembers: 'number' });
+  const C3 = await api.signup('Ed', 'CO'); await api.checkout(C3.token, 2000);
+  const jp = await api.joinPublic(C3.token, pp.id); has('joinPublic', jp, { id: 'string' });
+  const lb = await api.leaderboard(C1.token);
+  has('leaderboard', lb, { top: 'array', windowDays: 'number' });
+  const me2 = await api.me(C1.token);
+  has('me.stats', me2.stats, { played: 'number', wins: 'number', netCents: 'number' });
+  const rec = await api.recover(C1.recoveryCode);
+  has('recover', rec, { token: 'string', userId: 'string', name: 'string' });
+  try { await api.me(C1.token); fails++; console.log('FAIL old token still works'); } catch { passes++; }
+  try { await api.recover('AAAA-BBBB-CCCC-DDDD'); fails++; } catch (e) { if (e.message === 'bad_code') passes++; else { fails++; console.log('FAIL recover error', e.message); } }
+  for (const code of ['rate_limited', 'public_auto', 'server_error']) { if (errMsg({ message: code }) === 'Something went wrong. Try again.') { fails++; console.log('FAIL no message for', code); } else passes++; }
+}
+
 // error codes the UI maps must actually be what the server sends
-const { errMsg } = await import('../../src/util.js');
 const probes = [
   ['insufficient_funds', () => api.createPot(A.token, { name: 'Huge', goalText: 'yes yes', durationDays: 7, stakeCents: 10000 })],
   ['bad_code', () => api.joinPot(A.token, 'NOPE00')],

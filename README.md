@@ -1,7 +1,7 @@
 # Stake
 
-Put money on a health goal with your friends. Hit it and you get your stake back plus a cut of everyone
-who quit. Miss it and your stake goes to the winners. Stake keeps a share of what's forfeited.
+Put money on a health goal. Hit it and you get your stake back plus a cut of everyone who quit. Miss it and
+your stake goes to the winners. Play with friends, or get matched with strangers from anywhere.
 
 <img src="brand/stake-mark-lime.png" alt="Stake" width="120">
 
@@ -9,77 +9,110 @@ who quit. Miss it and your stake goes to the winners. Stake keeps a share of wha
 |---|---|
 | App (Expo / React Native, runs in Expo Go) | `App.js`, `src/` |
 | Backend (Cloudflare Worker + D1) | `backend/` |
-| Tests | `backend/test/run.mjs` (money logic + API), `backend/test/contract.mjs` (app <-> API) |
+| Tests (run in CI on every push) | `backend/test/` |
 
-## How a pot works
+## Two ways to play
 
-1. Someone creates a pot: goal, 7/14/30 days, stake ($5-$100), up to 20 people. Their stake is locked immediately.
-2. Friends join with a 6-letter code (or the `/j/<code>` link). Each stake is locked on joining.
-3. The creator starts it once 2+ people are in. Everyone taps **I did it today** daily.
-4. Friends can **dispute** a check-in that looks fake: a day is thrown out when a majority of the *other*
+**Friends pots** — you make the pot (goal, 7/14/30 days, $5–$100, up to 20 people), share a 6-letter code or
+link, and start it when everyone's in.
+
+**Public pots** — tap *Play anyone*, pick goal + length + stake ($5/$10/$25/$50) and you're matched into an open
+pot with players from everywhere (or you open a lobby others fill). Public pots run themselves:
+- starts the moment it hits 12 players, or on its start day (at least 12 hours out) if 2+ are in
+- fewer than 2 on the day? The start slides a day, up to 3 times, then everyone is refunded
+- you can leave any time before it starts for a full refund
+- goals and stakes are server-defined, so strangers never see user-written text, only display names
+- a global leaderboard ranks public-pot net winnings over the last 30 days
+
+## Rules (both modes)
+
+1. Tap **I did it today** every day. Missing at most 20% of days (hard mode: none) keeps you in.
+2. Players can **dispute** a check-in that looks fake: a day is thrown out when a majority of the *other*
    members dispute it (2 disputes per person per pot).
-5. You win if you miss at most 20% of days (hard mode: zero). 
-6. When it ends (checked automatically every 30 min and whenever anyone opens the app):
+3. When it ends (the server checks every 30 min and whenever anyone opens the app):
    - some win, some lose: winners get their stake back + an equal share of the losers' stakes minus the rake
    - everyone wins: everyone is refunded, no rake
-   - nobody wins: everyone gets 90% back; the house keeps 10%
-   
-   Every cent is a row in a ledger; settlement is one atomic batch with unique refs, so it cannot pay twice,
-   and `sum(payouts) + rake = sum(stakes)` is fuzz-tested over thousands of random pots.
+   - nobody wins: everyone gets 90% back, the house keeps 10%
 
-## Run it locally (about 5 minutes)
+Every cent is a ledger row. Settlement is one atomic batch with unique refs, so it cannot pay twice, and
+`sum(payouts) + rake = sum(stakes)` is fuzz-tested over thousands of random pots.
 
-```
-cd backend
-npx wrangler d1 create stake                      # paste database_id into wrangler.toml
-npx wrangler d1 execute stake --local --file=schema.sql
-npx wrangler dev --ip 0.0.0.0                     # serves on :8787 in play-money mode
-```
-Then `bash setup.sh`, set `API_URL` in `stake-app/src/config.js` to `http://<your computer's LAN IP>:8787`,
-and `cd ../stake-app && npx expo start`. Open it in Expo Go on two phones (or one phone + a second account
-by reinstalling) to try a full pot. `DEMO_MODE = "true"` gives free play-money top-ups.
-
-## Deploy
+## Run it locally
 
 ```
 cd backend
-npx wrangler d1 execute stake --remote --file=schema.sql
+npm install
+npx wrangler d1 create stake                 # paste database_id into wrangler.toml
+npm run db:local
+npm run dev                                  # :8787, play-money mode
+```
+Then `bash setup.sh` (creates a fresh Expo app with matching SDK and copies Stake in), set `API_URL` in
+`../stake-app/src/config.js` to `http://<your LAN IP>:8787`, and `cd ../stake-app && npx expo start`.
+Open it on a couple of phones to try a pot. `DEMO_MODE = "true"` gives free play-money top-ups.
+
+## Deploy to production
+
+```
+cd backend
+npm run db:remote
 npx wrangler secret put ADMIN_SECRET
-npx wrangler deploy                                # prints https://stake-api.<you>.workers.dev
+npm run deploy                               # prints https://stake-api.<you>.workers.dev
 ```
-Put that URL in `src/config.js`.
+Put that URL in `src/config.js`, then build the app for the stores:
 
-## Taking real money
+```
+BUNDLE_ID=com.yourname.stake bash setup.sh
+cd ../stake-app
+npx eas-cli build --platform all --profile production
+npx eas-cli submit --platform all
+```
+(`eas.json` is included; `eas build` walks you through Apple/Google credentials the first time.)
 
-1. In `wrangler.toml` set `DEMO_MODE = "false"`.
+### Real money checklist
+
+1. `wrangler.toml`: `DEMO_MODE = "false"`, keep `RATE_LIMIT = "on"`, set `BLOCKED_STATES` for places you won't serve.
 2. `npx wrangler secret put STRIPE_SECRET_KEY` (start with a **test** key).
-3. In Stripe, add a webhook to `https://<your-worker>/api/stripe/webhook` for `checkout.session.completed`
+3. Stripe webhook → `https://<worker>/api/stripe/webhook` for `checkout.session.completed`
    (and `checkout.session.async_payment_succeeded`), then `npx wrangler secret put STRIPE_WEBHOOK_SECRET`.
-4. Top-ups use Stripe Checkout; the webhook credits the wallet exactly once per session (signature checked,
-   duplicate deliveries ignored; all of this is tested, but only against a mocked Stripe, so run a test-mode
-   payment end to end before going live).
-5. Cash-outs: users request them in the app; you see them with
-   `curl -H "x-admin-secret: $ADMIN_SECRET" https://<worker>/api/admin/withdrawals`, pay them (Stripe payout,
-   bank transfer, etc.), then mark done:
+   Top-ups credit the wallet exactly once per session (signature checked, retries ignored). That's tested against
+   a mocked Stripe, so run one test-mode payment end to end before going live.
+4. Cash-outs are requested in the app and paid by you:
+   `curl -H "x-admin-secret: $ADMIN_SECRET" https://<worker>/api/admin/withdrawals`, pay them, then
    `curl -X POST -H "x-admin-secret: $ADMIN_SECRET" -d '{"status":"paid"}' https://<worker>/api/admin/withdrawals/<id>`
-   (`"rejected"` puts the money back in the user's wallet).
+   (`"rejected"` puts the money back in the wallet).
+5. Real-money apps in the stores need the store's real-money-gaming approvals, and holding balances/paid
+   contests have state-by-state rules. Have a lawyer look before launch; Stripe Connect is the usual route to
+   not holding funds yourself.
 
-Before real users: holding balances for people can count as money transmission, and paid contests have
-state-by-state rules. `BLOCKED_STATES` (comma list, e.g. `"AZ,AR"`) refuses signup in states you decide not
-to serve. Get a lawyer's read on both before launch; Stripe Connect is the usual way to avoid holding funds yourself.
+### What's built in for production
 
-## The business math
+- Fixed-window rate limits in D1: 120 writes/min/IP, 10 signups/hour/IP, 10 recovery attempts/hour/IP,
+  10 payment calls/min/user, 30 joins/min/user; 20 KB body cap
+- Strict security headers (no-sniff, no-store, CSP + frame-deny on the web pages), display names stripped of markup
+- Account recovery: a code shown at signup restores the account on a new phone and kills the old token
+- Race-safe money: atomic conditional charges (no overdraw), seat-taking only while a pot is open, idempotent
+  settlement, refunds, and Stripe credits
+- CI runs every test on each push (`.github/workflows/test.yml`)
 
-Stake earns `RAKE_BPS` (default 10%) of forfeited stakes. As an illustration, if 40% of stakes get forfeited,
-$20k/month in rake needs about $500k/month in stakes. That's the honest scale: this is a volume and retention
-game. Levers: raise `RAKE_BPS` (15-20% is common for this model), add a paid "pro" tier, and make pots
-repeatable so winners and losers both run it back.
+## Tests
 
-## Roadmap
+```
+cd backend && bun test/run.mjs && bun test/public.mjs && bun test/contract.mjs
+```
+`run.mjs` money rules, fuzz and API/Stripe flows · `public.mjs` matchmaking, auto-start, rollovers, refunds,
+join races, results, leaderboard, recovery, rate limits · `contract.mjs` drives the app's real API client
+against the Worker and checks every field the screens read.
 
-- Auto-verification: Apple Health / Google Fit for sleep, steps and workouts (needs a development build)
-- Photo proof stored in R2, and proof prompts per goal type
-- Email / phone sign-in so an account survives a lost phone (today an account is tied to the device token)
-- Push notifications: "3 days left, you're in the lead", "Ben just checked in"
-- Real payouts through Stripe Connect instead of manual withdrawals
-- Public pots and a leaderboard
+## Business math
+
+Stake keeps `RAKE_BPS` (default 10%) of forfeited stakes. If 40% of stakes get forfeited, $20k/month in rake
+needs about $500k/month in stakes: this is a volume and retention game. Levers: the rake (15–20% is common),
+repeat pots, and public-pot liquidity (the more players, the faster pots fill and start).
+
+## Known limits and roadmap
+
+- Check-ins are self-reported; the defense is majority dispute. Photo proof (R2) and Apple Health / Google Fit
+  auto-verification are the next trust upgrades, and matter most for public pots with strangers.
+- Player reporting/blocking and a name filter (display names are the only user-written text strangers see)
+- Push notifications ("3 days left", "someone disputed you"), email/phone sign-in
+- Payouts through Stripe Connect instead of manual withdrawals

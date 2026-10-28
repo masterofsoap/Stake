@@ -1,0 +1,16 @@
+{
+  "name": "stake-api",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute stake --local --file=schema.sql",
+    "db:remote": "wrangler d1 execute stake --remote --file=schema.sql",
+    "test": "bun test/run.mjs && bun test/public.mjs && bun test/contract.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

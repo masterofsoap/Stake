@@ -7,6 +7,7 @@ export const fmt = (cents) => {
 
 export const STAKES = [500, 1000, 2500, 5000, 10000];
 export const DURATIONS = [7, 14, 30];
+export const PUBLIC_STAKES = [500, 1000, 2500, 5000];
 
 export const GOALS = [
   { type: 'quit', emoji: '🚭', label: 'Quit nicotine', text: 'Stayed nicotine-free today', name: 'Quit Crew' },
@@ -34,6 +35,10 @@ const ERRORS = {
   no_disputes_left: "You've used both of your disputes in this pot.",
   not_configured: 'Payments are not set up on the server yet.',
   forbidden: 'Only the person who made the pot can do that.',
+  rate_limited: 'Slow down a little and try again in a minute.',
+  public_auto: 'Public pots start on their own.',
+  too_large: 'That request was too big.',
+  server_error: 'Our server hiccuped. Try again.',
 };
 export const errMsg = (e) => ERRORS[e && e.message] || 'Something went wrong. Try again.';
 

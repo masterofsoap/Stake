@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   token_hash TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   state TEXT NOT NULL,
+  recovery_hash TEXT UNIQUE,
   created_at TEXT NOT NULL
 );
 
@@ -35,8 +36,13 @@ CREATE TABLE IF NOT EXISTS pots (
   end_date TEXT,
   rake_cents INTEGER NOT NULL DEFAULT 0,
   settled_at TEXT,
+  is_public INTEGER NOT NULL DEFAULT 0,   -- 1 = anyone can find and join it
+  starts_at TEXT,                         -- public pots: scheduled auto-start day
+  rollovers INTEGER NOT NULL DEFAULT 0,   -- public pots: times the start was pushed back for lack of players
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_pots_public ON pots(is_public, status);
+CREATE INDEX IF NOT EXISTS idx_pots_status ON pots(status, end_date);
 
 CREATE TABLE IF NOT EXISTS members (
   pot_id TEXT NOT NULL,
@@ -69,4 +75,23 @@ CREATE TABLE IF NOT EXISTS withdrawals (
   amount_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | rejected
   created_at TEXT NOT NULL
+);
+
+-- One row per member per settled pot: powers stats and the global leaderboard.
+CREATE TABLE IF NOT EXISTS results (
+  pot_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  won INTEGER NOT NULL,
+  net_cents INTEGER NOT NULL,      -- payout minus stake (negative for a loss)
+  is_public INTEGER NOT NULL DEFAULT 0,
+  settled_at TEXT NOT NULL,
+  PRIMARY KEY (pot_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_results_board ON results(is_public, settled_at);
+
+-- Fixed-window rate limiting counters.
+CREATE TABLE IF NOT EXISTS rate_limits (
+  k TEXT PRIMARY KEY,
+  n INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
 );

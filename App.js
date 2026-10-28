@@ -17,7 +17,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as api from './src/api';
 import { API_URL } from './src/config';
-import { fmt, errMsg, GOALS, STAKES, DURATIONS, dayStatusColor, TYPE_LABEL } from './src/util';
+import { fmt, errMsg, GOALS, STAKES, DURATIONS, PUBLIC_STAKES, dayStatusColor, TYPE_LABEL } from './src/util';
 
 const KEY = 'stake:v1';
 const C = {
@@ -114,35 +114,91 @@ function Dots({ days, onPressDay }) {
 /* ---------- welcome ---------- */
 
 function Welcome({ onDone }) {
+  const [mode, setMode] = useState('new'); // new | recover | saved
   const [name, setName] = useState('');
   const [state, setState] = useState('');
   const [adult, setAdult] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [fresh, setFresh] = useState(null);
+  const [code, setCode] = useState('');
 
   const go = async () => {
     setBusy(true);
     try {
       const r = await api.signup(name.trim(), state.trim().toUpperCase());
-      await onDone({ token: r.token, userId: r.userId, name: r.name });
+      setFresh({ token: r.token, userId: r.userId, name: r.name, recoveryCode: r.recoveryCode });
+      setMode('saved');
     } catch (e) {
       Alert.alert("Couldn't sign you up", errMsg(e));
     } finally {
       setBusy(false);
     }
   };
+  const restore = async () => {
+    setBusy(true);
+    try {
+      const r = await api.recover(code.trim());
+      await onDone({ token: r.token, userId: r.userId, name: r.name, recoveryCode: code.trim().toUpperCase() });
+    } catch (e) {
+      Alert.alert("Couldn't restore", e && e.message === 'bad_code' ? "That recovery code doesn't match an account." : errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (mode === 'saved' && fresh) {
+    return (
+      <Screen title="">
+        <Text style={s.logoWord}>stake</Text>
+        <Text style={s.hero}>Save your recovery code</Text>
+        <Text style={s.sub}>
+          Your account lives on this phone. If you lose it or switch phones, this code is the only way to get your account and your money back. Screenshot it or send it to yourself.
+        </Text>
+        <Card style={{ marginTop: 16 }}>
+          <Text style={[s.code, { fontSize: 22, letterSpacing: 2 }]} selectable>
+            {fresh.recoveryCode}
+          </Text>
+          <Btn title="Save it somewhere" kind="ghost" onPress={() => Share.share({ message: `My Stake recovery code: ${fresh.recoveryCode}` })} />
+        </Card>
+        <Btn title="I saved it" onPress={() => onDone(fresh)} />
+      </Screen>
+    );
+  }
+
+  if (mode === 'recover') {
+    return (
+      <Screen title="" onBack={() => setMode('new')}>
+        <Text style={s.hero}>Welcome back</Text>
+        <Text style={s.sub}>Enter the recovery code you saved when you signed up.</Text>
+        <Card style={{ marginTop: 16 }}>
+          <TextInput
+            style={[s.input, { textAlign: 'center', letterSpacing: 2, fontWeight: '800', color: C.lime }]}
+            value={code}
+            onChangeText={setCode}
+            placeholder="XXXX-XXXX-XXXX-XXXX"
+            placeholderTextColor={C.sub}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={24}
+          />
+        </Card>
+        <Btn title={busy ? 'Checking...' : 'Restore my account'} onPress={restore} disabled={busy || code.replace(/[^A-Za-z0-9]/g, '').length < 16} />
+      </Screen>
+    );
+  }
 
   const ready = name.trim().length >= 2 && /^[A-Za-z]{2}$/.test(state.trim()) && adult;
   return (
     <Screen title="">
       <Text style={s.logoWord}>stake</Text>
-      <Text style={s.hero}>Bet on yourself.{'\n'}Win with your friends.</Text>
+      <Text style={s.hero}>Bet on yourself.{'\n'}Win against everyone.</Text>
       <Text style={s.sub}>
-        Put money on a health goal. Hit it and you get your stake back plus a cut of everyone who quit on theirs.
+        Put money on a health goal, with friends or strangers anywhere. Hit it and you get your stake back plus a cut of everyone who quit on theirs.
       </Text>
 
       <Card style={{ marginTop: 20 }}>
         <Label>Your name</Label>
-        <TextInput style={s.input} value={name} onChangeText={setName} placeholder="What your friends call you" placeholderTextColor={C.sub} maxLength={20} />
+        <TextInput style={s.input} value={name} onChangeText={setName} placeholder="What others will see" placeholderTextColor={C.sub} maxLength={20} />
         <Label>Your state (2 letters)</Label>
         <TextInput
           style={s.input}
@@ -159,6 +215,9 @@ function Welcome({ onDone }) {
         </TouchableOpacity>
       </Card>
       <Btn title={busy ? 'One sec...' : "Let's go"} onPress={go} disabled={!ready || busy} />
+      <TouchableOpacity onPress={() => setMode('recover')} style={{ alignItems: 'center', marginTop: 18 }}>
+        <Text style={{ color: C.sub, fontSize: 14 }}>I already have an account</Text>
+      </TouchableOpacity>
     </Screen>
   );
 }
@@ -224,9 +283,23 @@ function Home({ session, nav }) {
       {data && data.demoMode ? <Text style={s.demo}>Play-money mode: no real cash moves.</Text> : null}
       {err ? <Text style={s.err}>{err}</Text> : null}
 
+      {data && data.stats && data.stats.played ? (
+        <Text style={s.tiny}>
+          Record: {data.stats.wins}-{data.stats.played - data.stats.wins} · {data.stats.netCents >= 0 ? '+' : ''}
+          {fmt(data.stats.netCents)} all time
+        </Text>
+      ) : null}
+
+      <TouchableOpacity activeOpacity={0.9} onPress={() => nav.push('play')}>
+        <Card style={{ borderColor: C.lime, backgroundColor: '#17210F' }}>
+          <Text style={[s.potName, { color: C.lime, fontSize: 22 }]}>⚡ Play anyone, anywhere</Text>
+          <Text style={s.sub}>Get matched into a public pot with people from all over. It starts on its own.</Text>
+        </Card>
+      </TouchableOpacity>
       <View style={s.row}>
-        <Btn title="＋ New pot" onPress={() => nav.push('create')} style={{ flex: 1, marginRight: 8 }} />
-        <Btn title="Join a pot" kind="ghost" onPress={() => nav.push('join')} style={{ flex: 1 }} />
+        <Btn title="＋ Friends pot" kind="ghost" onPress={() => nav.push('create')} style={{ flex: 1, marginRight: 8 }} />
+        <Btn title="Join with code" kind="ghost" onPress={() => nav.push('join')} style={{ flex: 1, marginRight: 8 }} />
+        <Btn title="🏆" kind="ghost" onPress={() => nav.push('board')} style={{ paddingHorizontal: 16 }} />
       </View>
 
       {live.length ? <Label>YOUR POTS</Label> : null}
@@ -236,13 +309,179 @@ function Home({ session, nav }) {
       {data && !pots.length ? (
         <Card style={{ marginTop: 14 }}>
           <Text style={s.potName}>No pots yet</Text>
-          <Text style={s.sub}>Start one with a friend. Pick a goal, put in $10, and see who's serious.</Text>
+          <Text style={s.sub}>Tap Play anyone to get matched, or start one with a friend. Pick a goal, put in $10, and see who's serious.</Text>
         </Card>
       ) : null}
       {done.length ? <Label>PAST</Label> : null}
       {done.map((p) => (
         <PotRow key={p.id} p={p} />
       ))}
+    </Screen>
+  );
+}
+
+/* ---------- public play ---------- */
+
+function PublicRow({ p, onJoin }) {
+  const goal = GOALS.find((g) => g.type === p.goalType) || GOALS[5];
+  return (
+    <TouchableOpacity onPress={() => onJoin(p)} activeOpacity={0.85} disabled={p.joined}>
+      <Card>
+        <View style={s.rowBetween}>
+          <Text style={s.potName} numberOfLines={1}>
+            {goal.emoji} {p.name}
+          </Text>
+          <Money cents={p.potCents} color={C.lime} />
+        </View>
+        <Text style={s.sub}>{p.goalText}</Text>
+        <Text style={[s.sub, { marginTop: 6 }]}>
+          {p.memberCount}/{p.maxMembers} in · {p.durationDays} days · {fmt(p.stakeCents)} each
+          {p.startsAt ? ` · starts ${p.startsAt.slice(5)} or when full` : ''}
+        </Text>
+        {p.joined ? <Text style={[s.tiny, { color: C.lime }]}>You're in this one</Text> : null}
+      </Card>
+    </TouchableOpacity>
+  );
+}
+
+function Play({ session, nav }) {
+  const [goal, setGoal] = useState(GOALS[0]);
+  const [days, setDays] = useState(7);
+  const [stake, setStake] = useState(1000);
+  const [busy, setBusy] = useState(false);
+  const [list, setList] = useState(null);
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    try {
+      setList(await api.publicPots(session.token));
+      setErr('');
+    } catch (e) {
+      setErr(errMsg(e));
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const fail = (e) => {
+    Alert.alert('Hold on', errMsg(e));
+    if (e && e.message === 'insufficient_funds') nav.push('wallet');
+  };
+  const find = async () => {
+    setBusy(true);
+    try {
+      const r = await api.playPublic(session.token, { goalType: goal.type, durationDays: days, stakeCents: stake });
+      nav.replace('pot', { potId: r.id });
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const joinOne = (p) =>
+    Alert.alert(`Join ${p.name}?`, `${fmt(p.stakeCents)} comes out of your wallet now. ${p.goalText}, ${p.durationDays} days.`, [
+      { text: 'Not now', style: 'cancel' },
+      {
+        text: `Stake ${fmt(p.stakeCents)}`,
+        onPress: async () => {
+          try {
+            await api.joinPublic(session.token, p.id);
+            nav.replace('pot', { potId: p.id });
+          } catch (e) {
+            fail(e);
+            load();
+          }
+        },
+      },
+    ]);
+
+  const pool = list ? list.pots : [];
+  return (
+    <Screen title="Play anyone" onBack={nav.back} refreshing={false} onRefresh={load}>
+      <Text style={s.sub}>
+        Pick a goal and a stake. We drop you into a pot with other players from anywhere. It starts when it fills up, or at the start date once 2+ are in.
+        {list && list.playersLive ? `  ${list.playersLive} people are playing right now.` : ''}
+      </Text>
+
+      <Label>GOAL</Label>
+      <View style={s.wrap}>
+        {GOALS.filter((g) => g.type !== 'custom').map((g) => (
+          <Chip key={g.type} label={`${g.emoji} ${g.label}`} active={goal.type === g.type} onPress={() => setGoal(g)} />
+        ))}
+      </View>
+      <Text style={s.sub}>{goal.text}</Text>
+
+      <Label>HOW LONG</Label>
+      <View style={s.wrap}>
+        {DURATIONS.map((d) => (
+          <Chip key={d} label={`${d} days`} active={days === d} onPress={() => setDays(d)} />
+        ))}
+      </View>
+      <Label>YOUR STAKE</Label>
+      <View style={s.wrap}>
+        {PUBLIC_STAKES.map((v) => (
+          <Chip key={v} label={fmt(v)} active={stake === v} onPress={() => setStake(v)} />
+        ))}
+      </View>
+      <Btn title={busy ? 'Finding a pot...' : `Find me a pot · ${fmt(stake)}`} onPress={find} disabled={busy} style={s.bigBtn} />
+      <Text style={s.tiny}>
+        Miss at most {Math.floor(days * 0.2)} day{Math.floor(days * 0.2) === 1 ? '' : 's'} and you win. Anyone who quits pays the winners.
+      </Text>
+
+      <Label>OPEN POTS RIGHT NOW</Label>
+      {err ? <Text style={s.err}>{err}</Text> : null}
+      {list && !pool.length ? <Text style={s.sub}>None yet. Hit the button and yours will be the first.</Text> : null}
+      {pool.map((p) => (
+        <PublicRow key={p.id} p={p} onJoin={joinOne} />
+      ))}
+    </Screen>
+  );
+}
+
+function Board({ session, nav }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState('');
+  const load = async () => {
+    try {
+      setD(await api.leaderboard(session.token));
+      setErr('');
+    } catch (e) {
+      setErr(errMsg(e));
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const Row = ({ r }) => (
+    <View style={[s.histRow, r.isMe && { backgroundColor: '#17210F' }]}>
+      <Text style={[s.histText, { width: 34, color: r.rank <= 3 ? C.lime : C.sub, fontWeight: '800' }]}>{r.rank <= 3 ? ['🥇', '🥈', '🥉'][r.rank - 1] : r.rank}</Text>
+      <View style={{ flex: 1 }}>
+        <Text style={s.histText}>{r.isMe ? `${r.name} (you)` : r.name}</Text>
+        <Text style={s.tiny}>
+          {r.wins}-{r.played - r.wins} in public pots
+        </Text>
+      </View>
+      <Text style={[s.histAmt, { color: r.netCents >= 0 ? C.lime : C.red }]}>
+        {r.netCents >= 0 ? '+' : ''}
+        {fmt(r.netCents)}
+      </Text>
+    </View>
+  );
+  return (
+    <Screen title="Leaderboard" onBack={nav.back} refreshing={false} onRefresh={load}>
+      <Text style={s.sub}>Net winnings in public pots over the last {d ? d.windowDays : 30} days.</Text>
+      {err ? <Text style={s.err}>{err}</Text> : null}
+      {d && !d.top.length ? <Text style={[s.sub, { marginTop: 16 }]}>No finished public pots yet. Be the first on the board.</Text> : null}
+      <View style={{ marginTop: 12 }}>
+        {d && d.top.map((r) => <Row key={r.rank} r={r} />)}
+        {d && d.me && d.me.rank > 25 ? (
+          <>
+            <Text style={[s.tiny, { textAlign: 'center' }]}>...</Text>
+            <Row r={d.me} />
+          </>
+        ) : null}
+      </View>
     </Screen>
   );
 }
@@ -451,7 +690,7 @@ function PotScreen({ session, nav, potId }) {
 
   const { pot, members, me, results } = d;
   const mine = members.find((m) => m.isMe);
-  const isCreator = pot.creatorId === session.userId;
+  const isCreator = !pot.isPublic && pot.creatorId === session.userId;
   const myResult = results ? results.find((r) => r.userId === session.userId) : null;
   const invite = () =>
     Share.share({
@@ -509,8 +748,18 @@ function PotScreen({ session, nav, potId }) {
         </Card>
       ) : null}
       {pot.status === 'cancelled' ? <Text style={s.err}>This pot was cancelled and everyone was refunded.</Text> : null}
+      {pot.isPublic && pot.status === 'active' ? <Text style={s.tiny}>Public pot: players from everywhere. Dispute check-ins that look fake.</Text> : null}
 
-      {pot.status === 'open' ? (
+      {pot.status === 'open' && pot.isPublic ? (
+        <Card>
+          <Text style={s.potName}>Waiting for players</Text>
+          <Text style={s.sub}>
+            {pot.memberCount}/{pot.maxMembers} in. This pot starts by itself when it fills up, or on {pot.startsAt} if at least 2 people are in. Leave any time before that for a full refund.
+          </Text>
+          <Btn title="Bring a friend" kind="ghost" onPress={invite} />
+        </Card>
+      ) : null}
+      {pot.status === 'open' && !pot.isPublic ? (
         <Card>
           <Text style={s.potName}>Invite your people</Text>
           <Text style={s.sub}>
@@ -589,6 +838,24 @@ function PotScreen({ session, nav, potId }) {
 }
 
 /* ---------- wallet ---------- */
+
+function BackupCode({ code }) {
+  const [show, setShow] = useState(false);
+  return (
+    <>
+      <Label>ACCOUNT BACKUP</Label>
+      <Card>
+        <Text style={s.sub}>Lose your phone and this code is the only way back into your account and your money.</Text>
+        {show ? (
+          <Text style={[s.code, { fontSize: 20, letterSpacing: 2 }]} selectable>
+            {code}
+          </Text>
+        ) : null}
+        <Btn title={show ? 'Hide' : 'Show my recovery code'} kind="ghost" onPress={() => setShow(!show)} />
+      </Card>
+    </>
+  );
+}
 
 function Wallet({ session, nav }) {
   const [w, setW] = useState(null);
@@ -670,6 +937,8 @@ function Wallet({ session, nav }) {
         <Text key={x.id} style={s.tiny}>Pending withdrawal: {fmt(x.amount_cents)}</Text>
       ))}
 
+      {session.recoveryCode ? <BackupCode code={session.recoveryCode} /> : null}
+
       <Label>HISTORY</Label>
       {w && !w.entries.length ? <Text style={s.sub}>Nothing yet.</Text> : null}
       {w &&
@@ -739,6 +1008,8 @@ export default function App() {
       {top.name === 'create' && <Create {...common} />}
       {top.name === 'join' && <Join {...common} />}
       {top.name === 'wallet' && <Wallet {...common} />}
+      {top.name === 'play' && <Play {...common} />}
+      {top.name === 'board' && <Board {...common} />}
       {top.name === 'pot' && <PotScreen key={top.potId} {...common} potId={top.potId} />}
     </View>
   );

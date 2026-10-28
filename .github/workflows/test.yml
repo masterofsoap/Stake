@@ -1,0 +1,15 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: money logic, public pots, API
+        run: |
+          cd backend
+          bun test/run.mjs
+          bun test/public.mjs
+      - name: app <-> API contract
+        run: cd backend && bun test/contract.mjs

@@ -39,3 +39,8 @@ export const cancelPot = (t, id) => call(`/api/pots/${id}/cancel`, { method: 'PO
 export const leavePot = (t, id) => call(`/api/pots/${id}/leave`, { method: 'POST', token: t });
 export const checkin = (t, id, note) => call(`/api/pots/${id}/checkin`, { method: 'POST', token: t, body: { note } });
 export const dispute = (t, id, userId, date) => call(`/api/pots/${id}/dispute`, { method: 'POST', token: t, body: { userId, date } });
+export const recover = (code) => call('/api/recover', { method: 'POST', body: { code } });
+export const publicPots = (t, goalType) => call('/api/public' + (goalType ? '?goalType=' + encodeURIComponent(goalType) : ''), { token: t });
+export const playPublic = (t, body) => call('/api/public/play', { method: 'POST', token: t, body });
+export const joinPublic = (t, id) => call(`/api/pots/${id}/join`, { method: 'POST', token: t });
+export const leaderboard = (t) => call('/api/leaderboard', { token: t });

@@ -85,7 +85,7 @@ function freshEnv(extra = {}) {
     },
     async batch(stmts) { sqlite.exec('BEGIN'); try { const out = stmts.map((s) => s._exec()); sqlite.exec('COMMIT'); return out; } catch (e) { sqlite.exec('ROLLBACK'); throw e; } },
   };
-  return { sqlite, env: { DB, DEMO_MODE: 'true', ADMIN_SECRET: 'adm', RAKE_BPS: '1000', BLOCKED_STATES: 'AZ', ...extra } };
+  return { sqlite, env: { DB, DEMO_MODE: 'true', ADMIN_SECRET: 'adm', RAKE_BPS: '1000', BLOCKED_STATES: 'AZ', RATE_LIMIT: 'off', ...extra } };
 }
 const mkCall = (env) => async (method, path, { token, body, headers, raw } = {}) => {
   const r = await worker.fetch(new Request('https://api.test' + path, { method, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(headers || {}) }, body: raw !== undefined ? raw : body ? JSON.stringify(body) : undefined }), env);

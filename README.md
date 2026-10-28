@@ -3,7 +3,7 @@
 Put money on a health goal with your friends. Hit it and you get your stake back plus a cut of everyone
 who quit. Miss it and your stake goes to the winners. Stake keeps a share of what's forfeited.
 
-<img src="brand/stake-app-icon.png" alt="Stake" width="120">
+<img src="brand/stake-mark-lime.png" alt="Stake" width="120">
 
 | Part | Where |
 |---|---|
